@@ -40,6 +40,11 @@ shared-directory path.
 
 Fork is available only when the active Agent reports native support for it.
 
+For example, after an agent proposes a fix, you can fork that reply twice: ask one conversation for
+a minimal patch and the other for a refactor. Their histories are independent, but they share a
+working directory, so file changes from one are visible to the other. Use forks to explore ideas;
+create sessions with separate worktrees when two agents need isolated code changes.
+
 ## Right Sidebar: Browser and Side Chat
 
 The right sidebar can keep tools beside the main conversation. Open **Browser** from the session
@@ -112,6 +117,10 @@ CLI machine by removing the worktree's working directory; any uncommitted change
 the branch first, so nothing is lost, and the worktree is recreated automatically when you restore
 and continue. To also remove the conversation history and reclaim the rest of its disk space, use
 **Delete Session**.
+
+For example, archive a merged feature when you still want its discussion available. Restore it two
+weeks later if another fix is needed. Permanently delete it only after you no longer need the
+conversation or its remaining local resources.
 
 ## Unarchive Sessions
 

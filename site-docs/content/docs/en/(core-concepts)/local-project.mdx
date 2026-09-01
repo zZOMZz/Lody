@@ -9,6 +9,18 @@ Lody supports adding any local working directory as a project. We recommend usin
 for this workflow. After a local project is added, Lody keeps it in sync across devices in real
 time, including chat history, file-diff views, Git branches, and per-session worktrees.
 
+### Example: Add an Existing Repository to Lody
+
+Suppose your workstation already has `~/code/storefront`:
+
+1. Add that directory as a local project from the desktop app.
+2. Create a “Fix cart price refresh” session from `main`.
+3. The agent edits and tests in an isolated worktree on the workstation, without mixing uncommitted changes into the original directory.
+4. After leaving your desk, use your phone to inspect the conversation and diff, then continue sending instructions to the agent bound to the workstation.
+
+The project files remain on the workstation. Other devices synchronize the project and session's
+collaboration view; they do not automatically receive another full repository checkout.
+
 ## Add a Local Project
 
 Lody supports multiple ways to add one:
@@ -27,6 +39,10 @@ and continue working. Changes made locally are retained and sync when the connec
 Cloud-only actions, such as opening a project on another machine or fetching new GitHub data, still
 need a network connection. Removing a project from a different device also requires its owning
 machine to be online.
+
+For example, while the workstation is offline, its desktop app can still open the locally available
+`storefront` project and history. A phone cannot remotely drive the agent on that workstation or
+see progress that has not synchronized yet.
 
 ## Worktrees on Local Projects
 
@@ -63,6 +79,11 @@ To collaborate on a project that does not live on GitHub:
 Teammates can then see the project in their sidebar and start sessions against it. As with
 [shared machines](/docs/team#team-machine-visibility), only the project owner can change the
 visibility setting, and turning it off immediately hides the project from other members.
+
+For example, after Alice shares both `storefront` and its workstation, Bob can create a session
+bound to Alice's workstation from his own computer. Alice's workstation still supplies the agent
+and credentials; Bob's computer sends instructions and displays results. To use his own agent
+environment, Bob should place the repository on his machine and create a separate session there.
 
 ## Remote Access to Local Projects
 

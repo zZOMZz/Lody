@@ -31,6 +31,8 @@ GitHub App 安装用于授权仓库访问。个人 GitHub 身份是独立且可�
 
 授权后，设置页会显示已连接的 GitHub 账号。该选项不会改变 Lody 可访问哪些仓库；仓库访问仍由 GitHub App 安装决定。如果之后希望只使用 workspace 的 GitHub App 身份执行操作，也可以关闭该选项。
 
+例如，GitHub App 已获准访问 `acme/api` 后，Lody 就能读取该仓库。Alice 再开启 **Act as you**，她从 Lody 发布的 Review 评论会显示为 Alice；关闭后改用 workspace 的 App 身份。无论是否开启个人身份，Lody 都不会因此获得安装时未授权的其他仓库。
+
 ## 选择仓库进行对话
 
 点击主页，在对话框的左上角可以选择已经被添加到工作区的仓库，选中后旁边会列出对应仓库的所有分支，选择你所需要开始进行开发的分支。
@@ -46,6 +48,19 @@ GitHub App 安装用于授权仓库访问。个人 GitHub 身份是独立且可�
 <img src="/_docs-assets/mention-issue.png" alt="" />
 
 可以使用 ↑ ↓ 方向键进行选择，使用回车选中，对应的 Issue 或 PR 信息会加入到 Prompt 中，Agent 可以自行进行对应信息的读取，来完成类似 `修复 #12 的问题`， `review #56 PR 的功能实现` 的工作。
+
+### 示例：从 Issue 到合并
+
+假设 `#12` 报告“退出登录后刷新页面仍显示旧用户名”：
+
+1. 选择仓库和 `main` 分支，在 Prompt 中插入 `#12`，要求 Agent 复现并补充测试。
+2. Lody 为 Session 创建独立分支和 worktree，Agent 在其中修改代码。
+3. 检查 Diff 和测试结果后，将改动 Commit & Push，并创建或关联 PR。
+4. CI 失败时，在同一 Session 中把失败信息交给 Agent 继续修复。
+5. Review 评论到达后使用 **Fix PR Comments**，再次审查并推送。
+6. PR 合并后归档 Session，保留对话供以后追溯。
+
+这个流程中，Issue、对话、CI 和 Review 是协作上下文；源代码仍然通过分支和 PR 合并。
 
 ## PR 状态和 CI 同步
 

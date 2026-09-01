@@ -29,6 +29,26 @@ When you create a task in Lody, it automatically:
     └── <sessionId-2>/       # Worktree for session 2
 ```
 
+### Example: Fix Two Issues in Parallel
+
+Suppose Alice starts one session to fix a login timeout while Bob starts another to adjust the
+navigation header:
+
+```text
+main
+├── session/a1b2c3d4 → edits auth.ts
+└── session/e5f6a7b8 → edits Header.tsx
+```
+
+Both agents can install dependencies, run tests, and edit files without putting uncommitted changes
+in each other's directories. The team reviews each branch separately, then integrates it through
+Git or a pull request.
+
+Worktrees isolate working directories; they do not eliminate Git merge conflicts. If both sessions
+eventually edit the same line, the branch merge still needs a correct resolution. Forks and child
+chats inside one session usually share a working directory, so create another worktree-backed
+session when file-level isolation matters.
+
 ## Benefits
 
 ### Parallel Execution
@@ -80,6 +100,10 @@ sessions work across different machines.
 Scripts run in the worktree directory. Environment variables exported inside the script only live
 for that script process; if the agent itself needs an environment variable, set it in
 [Agent Config](/docs/agents).
+
+For example, `cp .env.example .env` leaves a file in the worktree for the agent to read later.
+Running `export API_URL=...` affects only the setup process, so the agent does not inherit it after
+the script exits.
 
 ### Available Environment Variables
 

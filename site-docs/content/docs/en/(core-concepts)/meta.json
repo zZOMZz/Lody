@@ -1,4 +1,13 @@
 {
   "title": "Core Concepts",
-  "pages": ["session", "session-tabs", "local-project", "github", "agents", "cli", "worktrees"]
+  "pages": [
+    "session",
+    "session-tabs",
+    "local-first-and-crdt",
+    "local-project",
+    "github",
+    "agents",
+    "cli",
+    "worktrees"
+  ]
 }

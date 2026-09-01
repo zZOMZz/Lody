@@ -48,6 +48,11 @@ which repositories Lody can access; repository access still comes from the GitHu
 You can turn the option off later if you want Lody to use only the workspace GitHub App identity
 again.
 
+For example, after the GitHub App is allowed to access `acme/api`, Lody can read that repository.
+If Alice also enables **Act as you**, review comments she publishes from Lody appear as Alice;
+turning it off uses the workspace App identity instead. Neither choice grants access to repositories
+that were not selected in the App installation.
+
 ## Select a Repository for a Conversation
 
 On the home page, use the repository selector at the top-left of the composer to choose a
@@ -70,6 +75,20 @@ current repository.
 Use the up and down arrow keys to select an item, then press Enter to confirm. The selected Issue
 or PR context is injected into the prompt, so the agent can handle tasks like `Fix #12` or
 `Review the implementation in #56`.
+
+### Example: From an Issue to Merge
+
+Suppose `#12` reports that refreshing after sign-out still shows the old username:
+
+1. Select the repository and `main`, insert `#12` into the prompt, and ask the agent to reproduce it and add a test.
+2. Lody creates an isolated branch and worktree for the session, where the agent edits the code.
+3. Inspect the diff and test results, then commit and push the changes and create or attach a PR.
+4. If CI fails, keep working in the same session and ask the agent to address the failure.
+5. When review comments arrive, use **Fix PR Comments**, inspect the result, and push again.
+6. After merge, archive the session while keeping its conversation available for later reference.
+
+In this workflow, the Issue, conversation, CI, and review are collaboration context. Source code is
+still integrated through branches and pull requests.
 
 ## PR Status and CI Sync
 

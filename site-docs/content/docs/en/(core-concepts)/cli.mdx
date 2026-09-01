@@ -561,6 +561,11 @@ lody agent-config refresh-capabilities --help
 
 ## Common Examples
 
+The following is one complete but simplified CLI workflow. Suppose you connect to a development
+server over SSH and want Codex on that server to fix a test. Discover the available resources,
+start the daemon, and create a session. After the command returns a `sessionId`, inspect it, send a
+follow-up, and archive it when the work is complete.
+
 ```bash
 # Find the workspace id or slug you want to use
 lody workspace list
@@ -587,7 +592,20 @@ lody session create \
 # Read the latest visible transcript turns
 lody session history <sessionId> --limit 20
 
+# Inspect the bound machine and status, then send a follow-up turn
+lody session show <sessionId>
+lody session chat <sessionId> "Explain the fix and confirm the new test fails before it"
+
+# Remove completed work from the active list; it remains restorable
+lody session archive <sessionId>
+lody session restore <sessionId>
+
 # Inspect machines and refresh capabilities on the current machine
 lody machine list --workspace my-team --online-only
 lody agent-config refresh-capabilities codex --workspace my-team
 ```
+
+Replace `<sessionId>` with the actual ID returned by `session create`. `session create` and
+`session chat` drive the agent on the current machine, so its daemon must still be running.
+`session show`, `history`, `archive`, and `restore` primarily operate on synchronized session data
+and only require sign-in plus workspace access.

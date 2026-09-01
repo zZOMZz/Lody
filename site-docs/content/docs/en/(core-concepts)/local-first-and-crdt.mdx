@@ -1,0 +1,217 @@
+---
+title: Local First and CRDTs
+description: Understand Lody's local-first architecture, CRDT collaboration state, and how they differ from HTTP, WebSocket, SSH, and Git through simple examples.
+---
+
+# Local First and CRDTs
+
+Lody aims to become a local-first workspace for coding agents. This direction is often confused with offline apps, remote execution, or automatic code merging, but those are different concepts.
+
+Start with two ideas:
+
+- **Local first**: local data and local computation are the primary place where work happens; servers provide synchronization, collaboration, and cross-device connectivity.
+- **CRDT**: a data structure that lets independently edited replicas merge automatically and eventually reach the same result.
+
+CRDTs do not replace HTTP, WebSocket, or Git. Each solves a problem at a different layer.
+
+## What Does Local First Mean?
+
+A traditional server-centered application usually treats the server database as the only source of truth:
+
+```text
+Client reads → requests a server update → server confirms → client refreshes
+```
+
+A local-first application lets a local replica be useful on its own:
+
+```text
+Read and edit locally → update and persist immediately → sync when connected → replicas converge
+```
+
+This does not mean users must work offline, or that servers are no longer important. Changes can still synchronize in real time while online. The difference is that an ordinary local action does not always need to wait for a server before it becomes valid locally.
+
+### “Local” May Not Mean the Device in Your Hand
+
+In Lody, local usually means the **machine where the agent executes**. You might send an instruction from your phone while the agent runs on an office Mac:
+
+```text
+Lody on a phone
+      │ sends an instruction
+      ▼
+Lody daemon on an office Mac
+      │
+      ▼
+Codex / Claude Code → edits the Git repository on that Mac
+```
+
+The repository, terminal, agent process, and login state remain on the execution machine. The phone controls and observes the work; it does not automatically receive another full repository checkout.
+
+## What Is a CRDT?
+
+CRDT stands for Conflict-free Replicated Data Type. You can think of it as a data structure with predefined merge rules: different devices can modify their own replicas, receive updates later and in different orders, and still end up with the same state.
+
+A CRDT guarantees **convergence**—everyone eventually sees the same data. It does not guarantee that the result understands what people intended.
+
+### Example 1: Editing Different Fields
+
+Alice and Bob both see the same session:
+
+```text
+Title: Fix the login issue
+Status: In progress
+```
+
+They then act at the same time:
+
+- Alice changes the title to “Fix the OAuth login issue.”
+- Bob archives the session.
+
+If clients submit a complete stale object to a traditional endpoint, the later save may overwrite the earlier one. A CRDT can preserve them as separate updates:
+
+```text
+Alice: update title
+Bob: update archived
+```
+
+After synchronization, both replicas can show:
+
+```text
+Title: Fix the OAuth login issue
+Status: Archived
+```
+
+### Example 2: Adding Items to a List
+
+Suppose Alice and Bob are both offline and add separate items to a task list:
+
+```text
+Alice adds: Inspect the failing tests
+Bob adds: Update the migration guide
+```
+
+When they reconnect, a CRDT list can retain both insertions and present them in the same order on every replica, without asking either person to undo and resubmit their change.
+
+### Example 3: Editing the Same Field
+
+If Alice and Bob concurrently change the title to different values, the CRDT follows the stable rule defined by that data type to select or represent a result, keeping every replica consistent.
+
+The CRDT does not know which title better matches the team's intent. People may still need to discuss the change and edit it again. CRDTs solve data merging and consistency, not every collaboration disagreement.
+
+## How Are CRDTs Different from HTTP and WebSocket?
+
+They operate at different layers:
+
+- HTTP, WebSocket, and Loro Streams determine **how updates travel**.
+- CRDTs determine **how updates merge after they arrive**.
+
+CRDT updates can travel over HTTP or WebSocket:
+
+```text
+CRDT updates
+   ├── HTTP
+   ├── WebSocket
+   ├── Loro Streams
+   └── local IPC
+```
+
+| Area | Server-centered model | CRDT / local-first model |
+| --- | --- | --- |
+| Data authority | Server database | Multiple mergeable replicas |
+| Local edits | Usually wait for server confirmation | Can be written and persisted locally first |
+| Offline edits | Require additional design | A core use case of the data model |
+| Concurrent conflicts | Overwrite, reject, or merge manually | Merge and converge according to CRDT rules |
+| Reconnection | Fetch server state again | Exchange missing updates |
+| Consistency | Server confirmation is easier to reason about | Usually eventual consistency |
+
+A server can still handle authentication, authorization, persistence, message relay, and device discovery in a CRDT architecture. It simply does not have to arbitrate every ordinary data update.
+
+## Which Mechanism Manages Each Part of Lody?
+
+The important distinction is between workspace state and repository code:
+
+| Content | Primary mechanism | Meaning |
+| --- | --- | --- |
+| Session messages, status, and workspace configuration | Loro / Flock CRDT documents | Synchronize collaboration state between relevant clients and runtimes |
+| Agent execution, terminals, and tool calls | CLI / daemon on the execution machine | Run on the machine bound to the session |
+| Repository files and code changes | Local filesystem, Git, and worktrees | Source code is not automatically merged by CRDTs |
+| Final integration between branches | Commit, merge, rebase, or pull request | Uses the standard Git workflow |
+
+Therefore, “automatic CRDT merging” usually applies to messages, configuration, or status. It does not automatically turn two agents' edits to `app.ts` into one correct source file.
+
+## How Do Alice and Bob Work with an Agent Together?
+
+### Continuing the Same Session
+
+Alice creates a session on a machine she has shared, then Bob sends another instruction to that session:
+
+```text
+Bob's client
+      │ adds an instruction
+      ▼
+The same logical session on Alice's machine
+      │
+      ▼
+Original agent configuration + original directory or worktree
+```
+
+The instruction still executes on the machine bound to the session. Bob is using the agent configuration and execution environment on Alice's machine; the session does not automatically move to Bob's machine because Bob sent the message.
+
+Bob must be allowed to access the session and machine, and Alice's machine must be online. Other devices cannot remotely drive an agent on a machine that is offline.
+
+### Creating Another Session
+
+Bob can instead create an independent session and worktree on his own machine:
+
+```text
+Alice's session / worktree ─┐
+                            ├── Git branch / PR → merge code
+Bob's session / worktree   ─┘
+```
+
+The sessions have separate conversations and execution environments. The team can share their state and diffs, but the final code is still integrated through Git.
+
+## What Happens Offline?
+
+The local-first goal is to keep existing local capabilities useful. If an execution machine briefly loses its connection, local processes and operations that do not depend on the network can continue using the local repository, while state that is already durable or can be persisted remains local. After reconnection, the runtime can exchange missing CRDT updates.
+
+This cannot remove real network dependencies:
+
+- A phone cannot control a completely offline computer in real time.
+- Teammates cannot immediately see progress that has not synchronized.
+- Operations that depend on an online model API, GitHub, or a remote MCP service still fail or wait.
+- Remote instructions cannot execute immediately while the machine is unreachable.
+
+Local first therefore does not mean that every feature works offline. It means that local data and computation do not all become unusable whenever a central service is temporarily unavailable.
+
+## How Does This Relate to SSH?
+
+SSH answers “How can I securely log in to and operate another machine?” Local first answers “How can local replicas remain useful, and how do devices synchronize collaboration state?”
+
+Running Codex on a remote server through SSH also keeps the repository and agent on that server. SSH itself does not provide shared sessions, CRDT merging, multi-user state synchronization, or cross-agent orchestration. The two can be used together: SSH for machine administration, and Lody for organizing machines, agents, and team collaboration.
+
+## Benefits and Tradeoffs
+
+The main benefits of local-first and CRDT architecture include:
+
+- responsive local operations without a network round trip for every step;
+- useful local capabilities during temporary network interruptions;
+- easier convergence for concurrent edits across devices and people;
+- agents, repositories, and credentials can stay on user-controlled machines;
+- the same workspace model can grow to support more collaborative content.
+
+The tradeoffs include:
+
+- more complex synchronization, authorization, and document lifecycles;
+- dedicated designs for deletion, compaction, garbage collection, and schema migration;
+- eventual consistency rather than central transaction confirmation at every step;
+- automatic structural convergence does not resolve every semantic conflict.
+
+For payments, inventory, and other data that requires one authority and strong transaction boundaries, a traditional server database is often more direct. For a workspace like Lody—combining local execution, multi-device access, long-running agent tasks, and team collaboration—local-first and CRDT architecture better match the intended workflow.
+
+Lody is still moving toward complete local-first support. This page describes the product and architecture direction; it does not mean that every current feature can already operate fully offline.
+
+## Related Reading
+
+- [Sessions](/docs/session): Learn how agent conversations and execution configuration are organized.
+- [Worktrees](/docs/worktrees): Learn how concurrent agent tasks isolate code changes.
+- [Team Features](/docs/team): Learn how session and machine visibility works in a team.

@@ -542,6 +542,8 @@ lody agent-config refresh-capabilities --help
 
 ## 常见示例
 
+下面是一条完整但简化的 CLI 工作流。假设你通过 SSH 登录了一台开发服务器，希望让这台服务器上的 Codex 修复测试：先发现可用资源并启动 daemon，再创建 Session；命令返回 `sessionId` 后，可以继续查看、追问和归档。
+
 ```bash
 # 先找到要使用的 workspace id 或 slug
 lody workspace list
@@ -568,7 +570,17 @@ lody session create \
 # 读取最近 20 条用户可见 transcript
 lody session history <sessionId> --limit 20
 
+# 查看任务绑定的机器和当前状态，再发送一轮追问
+lody session show <sessionId>
+lody session chat <sessionId> "解释修复原因，并确认新增测试在修复前会失败"
+
+# 工作完成后移出活跃列表；需要时仍可恢复
+lody session archive <sessionId>
+lody session restore <sessionId>
+
 # 查看在线机器，并刷新当前机器上的能力缓存
 lody machine list --workspace my-team --online-only
 lody agent-config refresh-capabilities codex --workspace my-team
 ```
+
+其中 `<sessionId>` 替换为 `session create` 返回的真实 ID。`session create` 和 `session chat` 会驱动当前机器上的 Agent，因此 daemon 必须仍在运行；`session show`、`history`、`archive` 和 `restore` 主要操作已经同步的 Session 数据，只要求登录和 workspace 访问权限。
