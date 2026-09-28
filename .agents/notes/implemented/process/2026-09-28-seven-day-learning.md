@@ -5,6 +5,8 @@ Translation: current
 
 [中文](2026-09-28-seven-day-learning.zh.md)
 
+PR: [zZOMZz/Lody#1](https://github.com/zZOMZz/Lody/pull/1)
+
 ## Abstract
 
 Lody's source and existing explanations span several runtimes, so a new reader needs a bounded route through responsibilities and failure behavior. The course follows a message through the local desktop, execution, persistence, display, and worktree recovery over seven days. It combines selected source readings, executable synthetic experiments, daily exercises, and a separate scored answer key. Experiments distinguish conceptual models from actual library and repository tests; completing them does not establish full desktop or cross-platform correctness.

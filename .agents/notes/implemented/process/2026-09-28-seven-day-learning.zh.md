@@ -5,6 +5,8 @@ Translation: current
 
 [English](2026-09-28-seven-day-learning.md)
 
+PR: [zZOMZz/Lody#1](https://github.com/zZOMZz/Lody/pull/1)
+
 ## 摘要
 
 Lody 的源码和现有说明跨越多个运行时，新读者需要一条范围明确的路径来理解职责和失败行为。课程用七天沿一条消息学习本地桌面、执行、持久化、显示及工作区恢复。每章组合指定源码阅读、可运行的合成实验、练习和独立评分答案。实验区分概念模型与真实库、项目测试，通过它们不代表完成桌面或跨平台正确性验证。
