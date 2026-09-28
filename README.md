@@ -168,4 +168,6 @@ action to trigger CI. Existing releases and their assets are preserved on reruns
 - `packages/acp-extension-{core,kimi}` — ACP extension submodule workspaces
 - `site-docs` — Website, documentation, and blog
 
+For a guided source walkthrough, follow the [seven-day learning course (中文)](./.agents/docs/learning/README.md), with runnable examples, exercises, and a separate answer key.
+
 See [CONTRIBUTING.md](./CONTRIBUTING.md) for development setup and the community PR size policy.
