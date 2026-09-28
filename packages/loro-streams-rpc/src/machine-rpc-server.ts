@@ -1,3 +1,4 @@
+import type { PreviewControlProof } from '@lody/shared';
 import type {
   AgentConfigId,
   CodeCollabV2InitDirectoryOk,
@@ -27,9 +28,11 @@ import type {
   MachineAcpCapabilitiesRefreshResponse,
   MachineBugReportResponse,
   MachineId,
+  MachinePiExtensionsResponse,
   MachinePingResponse,
   MachineRestartResponse,
   MachineStatusResponse,
+  MachinePreviewControlResponse,
   MachineUpgradeResponse,
   PreviewTarget,
   PreviewTargetApproval,
@@ -45,9 +48,12 @@ import type {
   SessionForkResponse,
   SessionForkSpec,
   SessionSteerResponse,
+  SessionGoalAction,
+  SessionGoalResponse,
   SessionId,
   SessionPreviewCreateResponse,
   SessionPreviewRevokeResponse,
+  SessionPreviewStatusResponse,
   SessionTurnInputConfig,
   WorkspaceId,
 } from '@lody/shared';
@@ -110,6 +116,7 @@ const DEFAULT_MAX_CONCURRENT_REQUESTS = 16;
 const DEFAULT_MAX_CONCURRENT_CONTROL_REQUESTS = 4;
 const CONTROL_METHODS: ReadonlySet<string> = new Set([
   'machine/status',
+  'machine/preview-control',
   'machine/ping',
   'machine/restart',
   'machine/upgrade',
@@ -117,6 +124,7 @@ const CONTROL_METHODS: ReadonlySet<string> = new Set([
   'session/cancel',
   'session/live-status',
   'session/steer',
+  'session/goal',
   'session/terminate',
   'session/dispatch-turn',
   'session/prepare',
@@ -128,6 +136,9 @@ const REQUEST_LOOP_REPEAT_WARN_INTERVAL_MS = 30_000;
 const redactRpcRequestForLog = (raw: unknown): unknown => {
   if (typeof raw !== 'object' || raw === null) return raw;
   const request = raw as { method?: unknown; params?: unknown };
+  if (typeof request.method === 'string' && request.method.startsWith('session/preview-')) {
+    return { method: request.method, params: '[REDACTED PREVIEW CONTROL]' };
+  }
   if (
     (request.method !== 'machine/acp-authenticate' &&
       request.method !== 'machine/acp-capabilities-refresh') ||
@@ -284,6 +295,7 @@ type RpcServerDeps = {
    */
   maxConcurrentRequests?: number;
   getMachineStatus: () => Promise<MachineStatusResponse>;
+  getPreviewControl?: () => Promise<MachinePreviewControlResponse>;
   pingMachine?: (args: { requestId: string }) => Promise<MachinePingResponse>;
   restartMachine?: (args: {
     requesterUserId: string;
@@ -304,6 +316,7 @@ type RpcServerDeps = {
   ) => void;
   refreshMachineAcpCapabilities: (args: {
     configId: AgentConfigId;
+    force?: boolean;
     onAcpBinaryProgress?: (message: MachineAcpBinaryProgressMessage) => void;
     signal: AbortSignal;
   }) => Promise<MachineAcpCapabilitiesRefreshResponse>;
@@ -334,6 +347,9 @@ type RpcServerDeps = {
     agentType: string;
     onAcpBinaryProgress?: (message: MachineAcpBinaryProgressMessage) => void;
   }) => Promise<MachineAcpBinaryInstallResponse>;
+  listMachinePiExtensions?: (args: {
+    configId?: AgentConfigId;
+  }) => Promise<MachinePiExtensionsResponse>;
   submitBugReport?: (args: {
     description: string;
     reporterUserId: string;
@@ -342,6 +358,7 @@ type RpcServerDeps = {
   cancelSession?: (args: {
     sessionId: SessionId;
     turnId: string;
+    subagentTaskId?: string;
   }) => Promise<SessionCancelResponse>;
   getSessionLiveStatus?: (args: {
     sessionId: SessionId;
@@ -354,6 +371,12 @@ type RpcServerDeps = {
     timestamp: string;
     inputConfig: SessionTurnInputConfig;
   }) => Promise<SessionSteerResponse>;
+  controlSessionGoal?: (args: {
+    sessionId: SessionId;
+    action: SessionGoalAction;
+    objective?: string;
+    userId: string;
+  }) => Promise<SessionGoalResponse>;
   terminateSession?: (args: { sessionId: SessionId }) => Promise<SessionTerminateResponse>;
   forkSession?: (args: SessionForkSpec) => Promise<SessionForkResponse>;
   editAndResendSession?: (
@@ -408,16 +431,24 @@ type RpcServerDeps = {
     line?: number;
     character?: number;
   }) => Promise<CodeCollabV2LspUnsupported>;
+  getSessionPreviewStatus?: (args: {
+    sessionId: SessionId;
+    requestedByUserId: string;
+    proof: PreviewControlProof;
+    renewEndpointId?: string;
+  }) => Promise<import('@lody/shared').SessionPreviewStatusResponse>;
   createSessionPreview?: (args: {
     sessionId: SessionId;
     requestedByUserId: string;
+    proof: PreviewControlProof;
     target: PreviewTarget;
     approval: PreviewTargetApproval;
-    replaceExisting?: boolean;
+    restart?: boolean;
   }) => Promise<SessionPreviewCreateResponse>;
   revokeSessionPreview?: (args: {
     sessionId: SessionId;
     requestedByUserId: string;
+    proof: PreviewControlProof;
     reason?: string;
   }) => Promise<SessionPreviewRevokeResponse>;
   getLocalProjectGitState?: (args: {
@@ -744,6 +775,18 @@ export class LoroStreamsMachineRpcServer {
           await this.appendResultResponse(request.replyTo, request.id, request.method, response);
           return;
         }
+        case 'machine/preview-control': {
+          if (!this.deps.getPreviewControl) {
+            await this.appendErrorResponse(request.replyTo, request.id, request.method, {
+              code: LORO_STREAMS_RPC_ERROR_CODES.methodUnavailable,
+              message: 'Preview control is not available on this machine.',
+            });
+            return;
+          }
+          const response = await this.deps.getPreviewControl();
+          await this.appendResultResponse(request.replyTo, request.id, request.method, response);
+          return;
+        }
         case 'machine/ping': {
           if (!this.deps.pingMachine) {
             await this.appendErrorResponse(request.replyTo, request.id, request.method, {
@@ -819,6 +862,7 @@ export class LoroStreamsMachineRpcServer {
             };
             const response = await this.deps.refreshMachineAcpCapabilities({
               configId: request.params.configId as AgentConfigId,
+              force: request.params.force === true,
               onAcpBinaryProgress: appendProgress,
               signal: controller.signal,
             });
@@ -1024,6 +1068,20 @@ export class LoroStreamsMachineRpcServer {
           await this.appendResultResponse(request.replyTo, request.id, request.method, response);
           return;
         }
+        case 'machine/pi-extensions': {
+          if (!this.deps.listMachinePiExtensions) {
+            await this.appendErrorResponse(request.replyTo, request.id, request.method, {
+              code: LORO_STREAMS_RPC_ERROR_CODES.methodUnavailable,
+              message: 'Pi extension listing is not available on this machine.',
+            });
+            return;
+          }
+          const response = await this.deps.listMachinePiExtensions({
+            configId: request.params.configId as AgentConfigId | undefined,
+          });
+          await this.appendResultResponse(request.replyTo, request.id, request.method, response);
+          return;
+        }
         case 'machine/bug-report': {
           if (!this.deps.submitBugReport) {
             await this.appendErrorResponse(request.replyTo, request.id, request.method, {
@@ -1051,6 +1109,7 @@ export class LoroStreamsMachineRpcServer {
           const response = await this.deps.cancelSession({
             sessionId: request.params.sessionId,
             turnId: request.params.turnId,
+            subagentTaskId: request.params.subagentTaskId,
           });
           await this.appendResultResponse(request.replyTo, request.id, request.method, response);
           return;
@@ -1092,6 +1151,23 @@ export class LoroStreamsMachineRpcServer {
             userId: request.params.userId,
             timestamp: request.params.timestamp,
             inputConfig,
+          });
+          await this.appendResultResponse(request.replyTo, request.id, request.method, response);
+          return;
+        }
+        case 'session/goal': {
+          if (!this.deps.controlSessionGoal) {
+            await this.appendErrorResponse(request.replyTo, request.id, request.method, {
+              code: LORO_STREAMS_RPC_ERROR_CODES.methodUnavailable,
+              message: 'Session goal control is not available on this machine.',
+            });
+            return;
+          }
+          const response = await this.deps.controlSessionGoal({
+            sessionId: request.params.sessionId as SessionId,
+            action: request.params.action,
+            ...(request.params.objective ? { objective: request.params.objective } : {}),
+            userId: request.params.userId,
           });
           await this.appendResultResponse(request.replyTo, request.id, request.method, response);
           return;
@@ -1431,9 +1507,25 @@ export class LoroStreamsMachineRpcServer {
           const response = await this.deps.createSessionPreview({
             sessionId: request.params.sessionId as SessionId,
             requestedByUserId: request.params.requestedByUserId,
+            proof: request.params.proof,
             target: request.params.target,
             approval: request.params.approval,
-            replaceExisting: request.params.replaceExisting,
+            restart: request.params.restart,
+          });
+          await this.appendResultResponse(request.replyTo, request.id, request.method, response);
+          return;
+        }
+        case 'session/preview-status': {
+          if (!this.deps.getSessionPreviewStatus) {
+            await this.appendErrorResponse(request.replyTo, request.id, request.method, {
+              code: LORO_STREAMS_RPC_ERROR_CODES.methodUnavailable,
+              message: 'Preview status is not available on this machine.',
+            });
+            return;
+          }
+          const response = await this.deps.getSessionPreviewStatus({
+            ...request.params,
+            sessionId: request.params.sessionId as SessionId,
           });
           await this.appendResultResponse(request.replyTo, request.id, request.method, response);
           return;
@@ -1449,6 +1541,7 @@ export class LoroStreamsMachineRpcServer {
           const response = await this.deps.revokeSessionPreview({
             sessionId: request.params.sessionId as SessionId,
             requestedByUserId: request.params.requestedByUserId,
+            proof: request.params.proof,
             reason: request.params.reason,
           });
           await this.appendResultResponse(request.replyTo, request.id, request.method, response);
@@ -1575,6 +1668,7 @@ export class LoroStreamsMachineRpcServer {
     method: LoroStreamsRpcMethod,
     result:
       | MachineStatusResponse
+      | MachinePreviewControlResponse
       | MachinePingResponse
       | MachineAcpCapabilitiesRefreshResponse
       | MachineAcpAuthenticateResponse
@@ -1585,9 +1679,11 @@ export class LoroStreamsMachineRpcServer {
       | MachineAcpBinaryInstallResponse
       | MachineAcpBinaryProgressMessage
       | MachineBugReportResponse
+      | MachinePiExtensionsResponse
       | SessionCancelResponse
       | LoroSessionLiveStatusRpcResponse
       | SessionSteerResponse
+      | SessionGoalResponse
       | SessionTerminateResponse
       | SessionForkResponse
       | SessionEditAndResendResponse
@@ -1606,6 +1702,7 @@ export class LoroStreamsMachineRpcServer {
       | FilePreviewV3Response
       | SessionPreviewCreateResponse
       | SessionPreviewRevokeResponse
+      | SessionPreviewStatusResponse
       | LocalProjectGitStateRpcResponse
       | LocalProjectControlResponse,
     options: { readonly codeCollabOwnerSessionId?: string } = {}

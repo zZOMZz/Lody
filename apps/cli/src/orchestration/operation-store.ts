@@ -9,7 +9,8 @@ import { z } from 'zod';
 import {
   LODY_OPERATION_COMMAND_MAX_BYTES,
   LODY_OPERATION_COMPLETION_MAX_BYTES,
-  LodyErrorSchema,
+  LodyOperationItemSchema as OperationItemSchema,
+  LodyOperationCompletionSchema as OperationCompletionSchema,
   LodyOperationIdSchema,
   type FrozenOperationContinuationConfig,
   type LodyError,
@@ -24,6 +25,16 @@ import {
   type WorkspaceId,
 } from '@lody/shared';
 import { getLodyDataDir } from '@lody/shared/node/installation-profile';
+import { discoveryCursor, DiscoveryPageShape } from '@/lib/discovery-query';
+
+export const OperationListQuerySchema = z
+  .object({
+    limit: DiscoveryPageShape.limit,
+    cursor: DiscoveryPageShape.cursor,
+    state: z.enum(['active', 'finished']).optional(),
+  })
+  .strict();
+export type OperationListQuery = z.input<typeof OperationListQuerySchema>;
 
 const DAY_MS = 24 * 60 * 60 * 1_000;
 const TERMINAL_RETENTION_MS = 7 * DAY_MS;
@@ -49,78 +60,6 @@ const OperationKindSchema = z.enum([
   'session_chat_many',
 ]);
 
-const OperationTargetSchema = z.object({ sessionId: z.string(), userTurnId: z.string() }).strict();
-const OperationOutputPreviewSchema = z
-  .object({
-    text: z.string(),
-    truncated: z.literal(true).optional(),
-    omittedBytes: z.number().int().nonnegative().optional(),
-  })
-  .strict();
-
-const OperationItemSchema = z.discriminatedUnion('status', [
-  z
-    .object({
-      status: z.literal('active'),
-      label: z.string().optional(),
-      target: OperationTargetSchema,
-      inputDurable: z.boolean(),
-    })
-    .strict(),
-  z
-    .object({
-      status: z.literal('succeeded'),
-      label: z.string().optional(),
-      target: OperationTargetSchema,
-      assistantTurnId: z.string(),
-      output: OperationOutputPreviewSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      status: z.literal('failed'),
-      label: z.string().optional(),
-      target: OperationTargetSchema.optional(),
-      error: LodyErrorSchema,
-    })
-    .strict(),
-  z
-    .object({
-      status: z.literal('cancelled'),
-      label: z.string().optional(),
-      target: OperationTargetSchema.optional(),
-    })
-    .strict(),
-]);
-
-const OperationResultSchema = z.object({ items: z.array(OperationItemSchema) }).strict();
-const CompletionTruncationSchema = z
-  .object({ truncated: z.literal(true), omittedBytes: z.number().int().nonnegative() })
-  .strict();
-const OperationCompletionSchema = z.discriminatedUnion('type', [
-  z
-    .object({
-      type: z.literal('result'),
-      value: OperationResultSchema,
-      truncation: CompletionTruncationSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal('error'),
-      error: LodyErrorSchema,
-      truncation: CompletionTruncationSchema.optional(),
-    })
-    .strict(),
-  z
-    .object({
-      type: z.literal('cancelled'),
-      partial: OperationResultSchema.optional(),
-      truncation: CompletionTruncationSchema.optional(),
-    })
-    .strict(),
-]);
-
 const FrozenConfigSchema = z
   .object({
     agentConfigId: z.string().optional(),
@@ -133,10 +72,10 @@ const FrozenConfigSchema = z
             modeId: z.string().optional(),
             modelId: z.string().optional(),
             configOptionValues: z.record(z.string(), z.union([z.string(), z.boolean()])).optional(),
-            taskToolsEnabled: z.boolean().optional(),
             inheritSessionDefaults: z.literal(false).optional(),
           })
-          .strict()
+          // Older stored configs may still carry `taskToolsEnabled`; drop it.
+          .strip()
           .nullable()
       )
       .optional(),
@@ -587,6 +526,62 @@ export class LodyOperationStore {
       )
       .all(workspaceId, ownerMachineId);
     return rows.map((row) => this.decodeOperation(row));
+  }
+
+  listForRequester(
+    scope: { workspaceId: WorkspaceId; requesterSessionId: SessionId; requesterUserId: string },
+    input: OperationListQuery = {}
+  ) {
+    const query = OperationListQuerySchema.parse(input);
+    const cursor = discoveryCursor(
+      { limit: query.limit, cursor: query.cursor },
+      JSON.stringify([
+        'operations',
+        scope.workspaceId,
+        scope.requesterSessionId,
+        scope.requesterUserId,
+        query.state ?? null,
+      ])
+    );
+    const rows = this.db
+      .prepare(`SELECT * FROM operations WHERE workspace_id = ? AND requester_session_id = ?
+      AND requester_user_id = ? AND (? IS NULL OR state = ?) AND (? IS NULL OR operation_id > ?)
+      ORDER BY operation_id ASC LIMIT ?`)
+      .all(
+        scope.workspaceId,
+        scope.requesterSessionId,
+        scope.requesterUserId,
+        query.state ?? null,
+        query.state ?? null,
+        cursor.after ?? null,
+        cursor.after ?? null,
+        cursor.limit + 1
+      );
+    const operations = rows.slice(0, cursor.limit).map((row) => this.decodeOperation(row));
+    const last = operations.at(-1);
+    const hasMore = rows.length > cursor.limit;
+    return {
+      ok: true as const,
+      items: operations.map((operation) => ({
+        operationId: operation.operationId,
+        kind: operation.kind,
+        state: operation.state,
+        createdAt: operation.createdAt,
+        deadlineAt: operation.deadlineAt,
+        itemCount: operation.items.length,
+      })),
+      hasMore,
+      ...(hasMore && last ? { nextCursor: cursor.encode(last.operationId) } : {}),
+    };
+  }
+
+  hasPendingWorkForRequester(workspaceId: WorkspaceId, requesterSessionId: SessionId): boolean {
+    return !!this.db
+      .prepare(
+        `SELECT 1 FROM operations WHERE workspace_id=? AND requester_session_id=? AND state='active'
+      UNION ALL SELECT 1 FROM deliveries WHERE workspace_id=? AND requester_session_id=? AND state='pending' LIMIT 1`
+      )
+      .get(workspaceId, requesterSessionId, workspaceId, requesterSessionId);
   }
 
   // Absence of a settlement is the durable obligation, including for Operations

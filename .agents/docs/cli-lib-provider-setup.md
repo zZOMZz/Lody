@@ -1,17 +1,34 @@
-# Durable provider setup (managed builtins)
+# Durable provider setup
 
-How the CLI creates a default managed-builtin agent config as durable, cancellable
-workspace state instead of an in-memory wizard.
+How the CLI creates a verified builtin agent config as durable, cancellable workspace
+state instead of an in-memory wizard. Managed builtins use the queue to prepare their
+runtime; Bub and Dimcode use it to verify their ACP process before publication.
 [`apps/cli/src/lib/AGENTS.md`](../../apps/cli/src/lib/AGENTS.md) requires this page to
 be read before `provider-setup-manager.ts` is changed, because the rules below bind it.
 
 ## Rows and ownership
 
-`provider-setup-manager.ts` owns durable default managed-builtin creation. The
+`provider-setup-manager.ts` owns durable builtin creation for managed runtimes, Bub, and Dimcode. The
 in-progress config lives in the machine Flock under `['providerSetup', configId]` while
 runtime, auth, and live-probe work is incomplete, and only the target CLI may publish
 it — by writing `agentConfig` and deleting `providerSetup` in one commit. Setup rows
 with executable runtime overrides are invalid.
+
+Only managed builtins enter binary status/download handling. Dimcode installs its
+pinned npm package during the live npx probe; it has no managed-artifact phase.
+Bub is user-installed, so
+its queued setup advances directly to the live ACP probe. A missing or broken `bub`
+command leaves a failed, retryable setup row and never publishes an `agentConfig`.
+Missing-executable and missing-ACP-plugin signatures are classified as
+`runtime-unavailable`, allowing the UI to offer the copyable Bub ACP preset installer;
+other startup/protocol failures remain `verification-failed`.
+
+Bub's configuration dialog can explicitly start this queue with Test and observe
+its setup row in place, including installation guidance, retry, and deletion.
+Successful publication returns the dialog to the form with Refresh and Save;
+subsequent refreshes use the published config rather than queueing setup again.
+Closing the dialog leaves the task in the provider list. See the
+[Bub verification Spec](../../specs/bub-provider-verification.md).
 
 Cancellation is a separate row, `['providerSetupCancellation', configId]`. After a
 merge the owning CLI causally deletes any concurrently published setup or config, so a

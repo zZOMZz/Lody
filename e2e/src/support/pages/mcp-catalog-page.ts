@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { type McpCatalogAcpEvent, McpCatalogFixture } from '../fixtures/mcp-catalog-fixture.js';
+import { openSidebarArchive } from './sidebar-footer.js';
 
 const RESPONSE_TEXT = 'Synthetic MCP selection received.';
 
@@ -162,17 +163,18 @@ export class McpCatalogPage {
       this.fixture.expectAgentExited(event.pid),
       this.fixture.expectMcpExited(mcpProcess.pid),
     ]);
-    await this.page.evaluate((id) => {
-      window.location.hash = `/local/sessions/${encodeURIComponent(id)}`;
-    }, sessionId);
-    const actions = this.page.getByRole('button', { name: /^(More actions|更多操作)$/u }).last();
-    await expect(actions).toBeVisible({ timeout: 30_000 });
-    await actions.click();
-    await this.page.getByRole('menuitem', { name: /^(Delete permanently|永久删除)$/u }).click();
+    await openSidebarArchive(this.page);
+    await expect(this.page).toHaveURL(/#\/local\/archive(?:\?.*)?$/u);
+    const archivedRow = this.page.locator(`[data-id="archive-session:${sessionId}"]`);
+    await expect(archivedRow).toBeVisible({ timeout: 30_000 });
+    await archivedRow.hover();
+    await this.page.getByRole('button', { name: /^(Delete permanently|永久删除)$/u }).click();
     const dialog = this.page.getByRole('dialog', {
       name: /^(Delete permanently\?|确认永久删除？)$/u,
     });
-    await dialog.getByRole('button', { name: /^(Delete permanently|永久删除)$/u }).click();
+    await dialog.getByRole('button', { name: /^(Delete|删除)$/u }).click();
+    await expect(archivedRow).toHaveCount(0);
+    await this.page.getByRole('button', { name: /^(Home|New chat|主页|新对话)$/u }).click();
     await expect(this.page).toHaveURL(/#\/local\/chat(?:\?.*)?$/u, { timeout: 30_000 });
   }
 

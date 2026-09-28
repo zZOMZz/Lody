@@ -9,11 +9,17 @@ Dispatch architecture: context/message-flow.md — user turns arrive by being wr
 session doc (meta pointers), not via a message bus. The WS/DO path is DEPRECATED. The
 CLI/MCP orchestration contract is specs/session-orchestration.md.
 
+| Boundary         | Owner                                             | Responsibility                                                       |
+| ---------------- | ------------------------------------------------- | -------------------------------------------------------------------- |
+| Admission        | [Dispatch watcher](session-dispatch-watcher.ts)   | Resolves metadata activation against history, queue, and RPC offers. |
+| Execution        | [Execution service](session-execution-service.ts) | Owns turns, steer results, cancellation, and raw-request drain.      |
+| Process lifetime | [Session](session.ts)                             | Owns ACP resources, confirmed termination, and bounded Codex refresh-start recovery. |
+
 ## Files
 
 - `session-dispatch-watcher.ts` — the current dispatch entry: watches
   `repo.watch('doc-metadata')` plus a per-session mirror subscribe and dispatches when
-  `latestUserMsgId` differs from `lastHandledUserMsgId`. Also accepts `session/dispatch-turn`
+  the shared pending-activation predicate identifies work. Also accepts `session/dispatch-turn`
   Machine RPC pushes via `offerRpcTurn`, which stash the payload as a third turn source
   (history → queue → stash) and wake the per-session check chain. That RPC ack means delivered, not
   authorized or executed. Its extensive header comment
@@ -32,7 +38,14 @@ CLI/MCP orchestration contract is specs/session-orchestration.md.
   machine-local marker store.
 - `session-edit-and-resend-service.ts` — same-session replacement of the last normal User turn.
 - `session-launch-config-resolver.ts` — durable launch config resolution.
-- `turn-post-processing-service.ts` — post-turn work (titles, notifications, diff stats).
+- `workspace-git-service.ts` — observes checkout branches for local folders and worktrees,
+  serializes reads/writes per owner Session, and publishes the last named branch. Execution
+  binds, terminal turns, and authorized Code Collab activation/refresh use this service;
+  observation requires neither a running agent nor a GitHub remote.
+- `turn-post-processing-service.ts` — post-turn work (titles, notifications, diff stats,
+  and the `workspaceDirty`/`workspaceUnpushed` probes that drive the Info Bar's
+  Commit & Push action; both cancellation routes refresh the branch and run `syncWorkspaceGitState`,
+  which self-gates on the session's GitHub binding).
 - `session-diff-stats-target.ts` — chooses which writer owns a session's `diffStats`.
 - `session-access-policy.ts` — local-first dispatch access precheck (optimistic-allow cache,
   D11). It may allow owner-cached turns from the catalog snapshot, deny `remote_missing`
@@ -42,7 +55,10 @@ CLI/MCP orchestration contract is specs/session-orchestration.md.
   validation boundaries and interruptible unbounded retries for an already-durable dispatch.
 - `session-user-resolver.ts` + `git-identity.ts` — the requesting user's commit identity.
 - `worktree/` — repo checkouts, worktrees, branch allocation, setup scripts
-  ([AGENTS.md](worktree/AGENTS.md)).
+  ([AGENTS.md](worktree/AGENTS.md)). `worktree-gc.ts` reconciles the Lody-managed
+  worktree tree against Session state: archived or deleted root Sessions lose their
+  directory (after a backup commit, branch kept); contract in
+  [specs/session-worktree-lifecycle.md](../../../../specs/session-worktree-lifecycle.md).
 
 ## Background
 
@@ -81,6 +97,17 @@ boundary's job, and `onMetaRoomSynced` is rate-limited in `../lib/loro/connectio
 while the cheap "back online" edge moved to `onStreamsOnline`
 (context/code-collab-flow.md).
 
+### Per-session check chain cost
+
+The dispatch branch of a session check awaits the whole agent turn, and the session mirror
+fires a check on every commit while the agent streams, so a long turn accumulates hundreds of
+triggers behind the blocked chain. Each check re-reads the full history (about 130 ms on a
+13 MB session doc) and settles every await on microtasks, so an uncoalesced drain pinned the
+daemon for up to 42 s without ever reaching the timer phase. `enqueueSessionCheck` therefore
+reuses a queued check that has not started yet — at most one follow-up per turn — and a check
+that follows another one in the chain yields one macrotask first
+([note](../../../../.agents/notes/implemented/bug-fix/2026-09-13-dispatch-check-coalescing.md)).
+
 ### Turn ordering
 
 Turn-scoped history LIST writes (assistant entry, ACP flushes, finalization, failure notices)
@@ -90,21 +117,49 @@ writes are never gated; some sit on the prompt critical path.
 
 ### Why the pointer write is bundled with the history append
 
-`latestUserMsgId` lives in workspace meta — the activation index that startup scans — and so
-cannot be derived from history. `lastHandledUserMsgId` advances to every turn that RUNS, so a
-turn that never passes through `latestUserMsgId` leaves a drained queue with the two pointers
-permanently unequal, which reads as a pending activation forever: the watcher waits out
-`HISTORY_SYNC_WAIT_TIMEOUT_MS` and then negatively acknowledges a present, terminal turn with a
-bogus `message_delivery_failed` notice. `SessionDocument.appendUserTurn` is the binding that
-prevents a separate hand-written pointer write from being one forgotten line away from that
-bug. The producers that deliberately fold the pointer into a larger meta patch are durable
-create (`commands/session.ts` `writeDispatchPointer`), dispatch start and steer ownership
-transfer (`session-execution-service.ts`), and edit-and-resend; the renderer authors its own
-writes and cannot reach `SessionDocument` at all.
+`latestUserMsgId` is the producer-owned metadata activation, separate from history transport.
+`SessionDocument.appendUserTurn` bundles history acceptance with publication so idle watchers
+and startup can discover an ordinary send. Durable create and edit-and-resend publish their
+own producer activation; execution start, completion, and steer handoff never rewrite it.
 
-Requeueing a refused steer works through the pointer rather than the entry status because
-`sessionNeedsActiveWatch` reads meta only: a turn visible solely in history is dropped the
-moment the session goes idle and is never reconsidered, restart included.
+Refused steers use daemon-owned `steerTurnStatuses[userTurnId] = 'pending'`. A history-only
+status change would not wake an idle watcher, while reusing the latest pointer could erase a
+newer send. The shared activation predicate includes these exact-id pending records; ordinary
+claim and missing-history failure acknowledge only that record. The same map retains steer
+status/provenance until the exact history row arrives. Terminal projections clear their
+records; applied processing stays recorded until execution ends. After restart, an abandoned
+applied processing record becomes canceled, never an ordinary replay.
+
+The execution service does not decide that interruption means non-delivery. AgentClient returns
+`applied`, `not-applied`, or `unknown`; only `not-applied` can move a steer back to ordinary
+dispatch, and only when the cancellation boundary selected `pendingInput: 'promote'`. User Stop
+selects promotion, while internal cancellation such as Edit & Resend and access revocation
+preserves the pending input. `unknown` becomes `delivery_unknown` in history. The UI offers a
+confirmed fresh send with a duplicate-work warning, never an automatic retry. RPC application
+ACKs update presentation only; the execution service alone projects processing and terminal
+steer status, so delayed ACKs cannot resurrect canceled or completed history.
+
+Stop and target completion abort local steer waits before entering the serialized completion
+lane. A submitted request keeps its late verdict outside that lane and its rewrite lease.
+Raw prompt/steer requests and configuration work remain in the owner's five-second drain;
+termination failure keeps ownership. Steer configuration checks the local signal before each
+subsequent mutation. Already-applied handoff commits before queued completion can run.
+
+Cancellation separately selects the pre-prompt process lifetime. Stop and access revocation
+discard it; Edit & Resend keeps it because preparation has already created the replacement
+inside that same ACP process. Creation/restoration retain their cancellation fences until
+initialization completes; those fences must not override a later `keep` during configuration.
+Binding a ready session alone does not authorize termination.
+
+History promotion and activation can fail independently. `promotion-failed` preserves proof
+of non-delivery. `recoveryOwned` tells the renderer not to publish a conflicting activation;
+it retries that proven failure once through the daemon and surfaces persistent failure.
+Legacy replies retain ordinary dispatch repair for pending_apply/pending/seen. Active,
+terminal, and removed entries are left alone; unknown delivery never takes this retry path.
+
+Foreground ACP configuration runs with the owner Effect's `AbortSignal`. Each mutation checks
+that signal before the next mutation, so an old turn whose first configuration call finishes
+late cannot overwrite the configuration of the turn that started after Stop.
 
 ### Why resume reopens the assistant entry
 
@@ -133,6 +188,31 @@ a failed command is indistinguishable from an empty one. This is what made a ses
 just opened a PR report "detached HEAD" and never associate it. Long-lived ACP stdio
 deliberately does not capture: it streams and would grow unbounded.
 
+### Why an unsplit terminal command line falls back to `sh -c`
+
+ACP `terminal/create` carries the executable in `command` and its argv in `args`, and that pair
+is spawned directly. Some agents instead send the whole shell line in `command` with empty `args`
+(a bare `ls -al`, or a relayed `bash -lc …`). Spawned literally, no such executable exists: on
+Linux the cgroup sandbox awaits the child's pid and the agent sees an untyped errno `-2`, while
+on the darwin fallback the handle resolves first, so `terminal/create` returns an id whose
+`wait_for_exit` never completes.
+
+The fallback is deliberately narrow — empty `args`, whitespace in `command`, and no file at
+that path — so a spec-conformant call is untouched and an executable whose path contains a
+space is still spawned directly. The shell is non-interactive and non-login (`sh -c`, not
+`bash -lc`): the agent asked for one command, not for the user's login profile to run and
+change its environment. A spawn that still fails answers with a JSON-RPC code instead of a bare
+errno, and its error is recorded as an exit status so no waiter is left pending.
+
+### Imported ACP identity
+
+Continuation and fork use the shared `resolveSessionAcpTargetId` projection: a
+Lody-owned runtime supersedes the immutable imported source; an unresolved source
+history conflict cannot authorize native fork. Import does not fabricate a live
+runtime id. Fork copies an ACP runtime configuration baseline only when it belongs
+to the copied last user turn and source ACP identity, rebasing it to the new native
+session id. Ordinary and worktree forks use the same projection and fence.
+
 ### Fork saga recovery
 
 Because a preparing target publishes no Session meta until its final commit, the repo meta
@@ -158,7 +238,8 @@ Agent `gh` auth for GitHub repo sessions is set up in `session-manager.ts`: it c
 credential broker, prepends the `~/.lody/bin/gh` shim, and injects/refreshes a managed
 `GH_TOKEN` when no user token is present. The shim lives in `../lib/gh-shim-script.ts`; token
 fetching/caching is in `../lib/github-token-manager.ts`; git HTTPS auth uses
-`../lib/git-credential-helper-script.ts`. Session process trees are already correct —
+`../lib/git-credential-helper-script.ts`. A native `gh` earlier in PATH bypasses the shim, so the
+PATH merges keep the shim dir first (see [../lib/AGENTS.md](../lib/AGENTS.md)). Session process trees are already correct —
 `prepareGitHubRepoSessionConfig` injects the env explicitly. The host-side rule is in
 [worktree/AGENTS.md](worktree/AGENTS.md).
 
@@ -166,8 +247,9 @@ fetching/caching is in `../lib/github-token-manager.ts`; git HTTPS auth uses
 
 The effective identity becomes `GIT_AUTHOR_*`/`GIT_COMMITTER_*` in the session env (`session.ts`
 `updateGitIdentity`, re-applied per turn via the execution service's `bindReadySession`). When
-the turn requester is the machine owner, the repository/machine Git identity wins and the
-resolved Lody/GitHub identity is its fallback. A non-owner requester always uses their resolved
+the turn requester is the machine owner, the repository/machine Git identity is used without a cloud profile lookup; missing local
+identity uses neutral LodyAI. Non-owner profile queries have a 60-second deadline; failed or
+timed-out entries are evicted so later turns can retry. A non-owner requester always uses their resolved
 Lody/GitHub identity and can never inherit the machine owner's Git config; if no usable requester
 identity exists, the neutral LodyAI identity is used. The cloud composition root owns hosted
 user resolution because the daemon does not own an end-user browser session; the local access

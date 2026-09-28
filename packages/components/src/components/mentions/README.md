@@ -16,15 +16,17 @@ rules live in [AGENTS.md](AGENTS.md); the pipeline and its reasoning live in
   funnel, both through `hooks/use-fire-once` rather than private refs.
   `category_enter` is reported from the resolved view, not a row callback: a
   navigation item never fires `onMentionSelect`, and the keyboard route counts.
-- `file-at-mention.tsx` and `mention-project-file-source.ts` provide file path
-  indexing and `@` candidates.
+- `file-at-mention.tsx` and `mention-project-file-source.ts` load file paths and
+  provide draft hydration. [`file-search/`](file-search/README.md) owns the
+  cancellable Worker, React lifecycle, and bounded path ranking.
 - `mention-session-source.ts` owns session slugs, candidates, the slug → id cache,
   hydration, the drop-time insertion, and the before-send expansion. Transfer
   format and the self-drop check live in `lib/session-mention-drag.ts`.
 - `mention-agent-role-source.ts` owns the Agent Roles work-context rule,
   candidates, hydration, and the before-send rewrite. `useAgentRoleMentionItems`
-  is the single owner of the mentionable list, like `useSessionMentionItems`: the
-  menu and expansion both read it. It reads the visible-machine index, so a test
+  is the single owner of readable Roles and their availability: the menu shows
+  disabled reasons after available matches; hydration and expansion use only
+  available Roles. Plain chat can reach any authorized machine. It reads the visible-machine index, so a test
   that renders a composer stubs it the same way it stubs the session source.
 - `issue-pr-hash-mention.tsx` provides cached GitHub issue/PR lookup, ranking,
   hydration, and post-insert title hints.

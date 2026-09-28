@@ -1,5 +1,6 @@
 import { existsSync } from 'node:fs';
 import { expect, type Page } from '@playwright/test';
+import { openSidebarArchive } from './sidebar-footer.js';
 
 type TerminalSnapshot = {
   terminalId: string;
@@ -73,7 +74,13 @@ export class WorkSessionPage {
     const agentOption = this.page.getByRole('menuitemradio', { name: agentName, exact: true });
     await agentOption.click();
     await expect(agentOption).toHaveAttribute('aria-checked', 'true');
-    await this.page.keyboard.press('Escape');
+    // Picking an option keeps this menu open on purpose, and Escape dismisses
+    // one level at a time — close the submenu, then the root menu.
+    const openMenus = this.page.getByRole('menu');
+    for (let i = 0; i < 4 && (await openMenus.count()) > 0; i++) {
+      await this.page.keyboard.press('Escape');
+    }
+    await expect(openMenus).toHaveCount(0);
   }
 
   async enableWorktree(): Promise<void> {
@@ -143,22 +150,19 @@ export class WorkSessionPage {
       })
       .toEqual([]);
 
-    await this.page.evaluate((sessionId) => {
-      window.location.hash = `/local/sessions/${encodeURIComponent(sessionId)}`;
-    }, resources.sessionId);
-    await expect(this.page).toHaveURL(
-      new RegExp(`#\\/local\\/sessions\\/${resources.sessionId}(?:\\?.*)?$`, 'u')
-    );
-    await this.page
-      .getByRole('button', { name: /^(More actions|更多操作)$/u })
-      .last()
-      .click();
-    await this.page.getByRole('menuitem', { name: /^(Delete permanently|永久删除)$/u }).click();
+    await openSidebarArchive(this.page);
+    await expect(this.page).toHaveURL(/#\/local\/archive(?:\?.*)?$/u);
+    const archivedRow = this.page.locator(`[data-id="archive-session:${resources.sessionId}"]`);
+    await expect(archivedRow).toBeVisible({ timeout: 30_000 });
+    await archivedRow.hover();
+    await this.page.getByRole('button', { name: /^(Delete permanently|永久删除)$/u }).click();
     const dialog = this.page.getByRole('dialog', {
       name: /^(Delete permanently\?|确认永久删除？)$/u,
     });
     await expect(dialog).toBeVisible();
-    await dialog.getByRole('button', { name: /^(Delete permanently|永久删除)$/u }).click();
+    await dialog.getByRole('button', { name: /^(Delete|删除)$/u }).click();
+    await expect(archivedRow).toHaveCount(0);
+    await this.page.getByRole('button', { name: /^(Home|New chat|主页|新对话)$/u }).click();
     await expect(this.page).toHaveURL(/#\/local\/chat(?:\?.*)?$/u, { timeout: 30_000 });
   }
 

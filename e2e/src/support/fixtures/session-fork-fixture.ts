@@ -1,10 +1,11 @@
 import { execFile } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { expect } from '@playwright/test';
+import { quoteCommandArgument } from './command-line.js';
 
 const execFileAsync = promisify(execFile);
 const ACP_ENTRY = resolve(dirname(fileURLToPath(import.meta.url)), 'session-fork-acp.mjs');
@@ -20,9 +21,12 @@ export type SessionForkEvent = {
   cwd?: string;
 };
 
-function quoteCommandArgument(value: string): string {
-  if (/^[A-Za-z0-9_./:\\-]+$/u.test(value)) return value;
-  return `"${value.replace(/["\\$`]/gu, '\\$&')}"`;
+function isSameExistingPath(left: string, right: string): boolean {
+  try {
+    return realpathSync(left) === realpathSync(right);
+  } catch {
+    return false;
+  }
 }
 
 export function isProcessAlive(pid: number): boolean {
@@ -102,18 +106,33 @@ export class SessionForkFixture {
     }
   }
 
-  async waitForEvent(event: string): Promise<SessionForkEvent[]> {
-    await expect
-      .poll(() => this.readEvents().filter((entry) => entry.event === event).length, {
-        timeout: 30_000,
-        intervals: [50, 100, 250, 500],
-      })
-      .toBeGreaterThan(0);
-    return this.readEvents().filter((entry) => entry.event === event);
-  }
-
   async waitForSourcePrompt(): Promise<SessionForkEvent> {
-    return (await this.waitForEvent('prompt-end')).at(-1)!;
+    let sourcePrompt: SessionForkEvent | undefined;
+    const projectRoot = realpathSync(this.projectRoot);
+    await expect
+      .poll(
+        () => {
+          const events = this.readEvents();
+          const sourceSessionIds = new Set(
+            events
+              .filter(
+                (entry) =>
+                  entry.event === 'session-new' &&
+                  entry.sessionId &&
+                  entry.cwd &&
+                  isSameExistingPath(entry.cwd, projectRoot)
+              )
+              .map((entry) => entry.sessionId!)
+          );
+          sourcePrompt = events.find(
+            (entry) => entry.event === 'prompt-end' && sourceSessionIds.has(entry.sessionId!)
+          );
+          return sourcePrompt?.sessionId;
+        },
+        { timeout: 30_000, intervals: [50, 100, 250, 500] }
+      )
+      .toEqual(expect.any(String));
+    return sourcePrompt!;
   }
 
   dispose(): void {

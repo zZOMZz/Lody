@@ -4,6 +4,18 @@ The composer footer knobs (Agent / Model / Interaction / Reasoning / Permission)
 Agent Role selection on every surface, attachments, and the two durable run-config
 authorities.
 
+Independent Plan uses ACP Core's boolean `plan_mode`. Shared capability discovery
+and selector ordering recognize it as Plan; UI changes and semantic run-config
+dispatch send booleans without changing permissions. Static Codex, Grok, Kimi,
+and DeepSeek Harness capabilities use Core's option factory; Claude retains its
+permission-based Plan mode. Kimi and Grok static permission selectors match their
+adapters' independent permission options rather than offering Plan as permission
+or a second interaction selector. DeepSeek's builtin profile mounts the Plan
+service; a runtime snapshot that omits Plan still removes the provisional control.
+Older agents advertising `collaboration_mode` retain
+their `default`/`plan` select values; do not rewrite those cached contracts into
+new wire ids. A live `configOptions` snapshot determines the current controls.
+
 Scope: `packages/components/src/components/sessions`. Binding rules and the
 pointer to this page live in
 [that directory's AGENTS.md](../../packages/components/src/components/sessions/AGENTS.md);
@@ -36,7 +48,10 @@ this page is the full text of the rules summarised there.
   `MenuOptionSearchList`: a provider may publish dozens of models, and scrolling
   is not a way to find one. A search field inside a Radix menu must be
   `DropdownMenuSearchInput`, which owns the fight with the menu's typeahead and
-  roving focus (its jsdoc has the details); the same tasks-side Model submenu
+  roving focus (its jsdoc has the details). `DropdownMenuSubTrigger` preserves
+  that field's focus when a precise pointer keeps moving or clicks over the
+  parent row after opening; touch still requires explicit field activation.
+  The same tasks-side Model submenu
   (`tasks/task-agent-run-config-menu.tsx`) is still an unsearchable clone and
   should adopt it.
   `DesktopRunConfigMenu` gains a **Role** row when the caller passes
@@ -220,14 +235,22 @@ this page is the full text of the rules summarised there.
   float shadow). The old bottom bar row is gone: machine name + workdir badge moved to
   `SessionHeaderMenu` (`machineName` prop). Mobile keeps the single
   `MobileSessionRunConfig` button + sheet.
-  Pending-attachment state machines: `pendingImages` (images) **and** `pendingFiles`
-  (files; cloud upload via `@/lib/session-file-upload.ts` with sha256/textPreview,
-  abort + part retry). Oversize images (>5 MiB) auto-degrade to files. Send blocks
-  while either is uploading. Desktop same-machine uploads use
-  `@/lib/electron-session-file-sender.ts` / `localProjects.sendSessionFileLocal`, return
-  a `transport:'local'` block into the same `pendingFiles[].uploaded` slot, and fall
-  back to cloud on handoff failure. The composer exposes one unfiltered hidden
-  `<input type="file">` on every platform (Windows included — the renderer no
-  longer crashes once locale `.pak`s ship; see `apps/electron/AGENTS.md`) and
-  routes each selection by MIME into the image or file state machine.
+  Images and files stay as local drafts until Send. Oversize images (>5 MiB)
+  degrade to files using the existing validation. The composer passes immutable
+  Blob snapshots with the complete input to the workspace submission journal.
+  Successful persistence releases the composer; a pending-message view owns
+  progress, retry, and cancellation. Existing-session direct/queue/guide and new
+  or child-session sends share this boundary, including attachment-only input.
+  Same-session text waits behind attachment preparation. Local creation metadata
+  stays in a renderer overlay until prepared history can be committed.
 
+The workspace Effect owner joins upload, local handoff, store borrows, and warmup
+cleanup before closing their dependencies. Successful attachment receipts survive
+retry; cancellation prevents stale completion from publishing history. Desktop
+same-machine files still use `localProjects.sendSessionFileLocal`, including its
+existing cloud fallback and backfill policy. Permanent local references remain a
+[separate proposal](../../specs/local-attachment-references.md).
+
+See the [draft Spec](../../specs/session-files.md) for ownership, recovery, and
+acceptance boundaries. Implementation and deterministic tests do not establish
+packaged-device or native-mobile-shell acceptance.

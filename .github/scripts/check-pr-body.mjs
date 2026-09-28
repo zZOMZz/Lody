@@ -26,26 +26,8 @@ const STRUCTURAL_VIEW_LANGUAGES = new Set([
 ]);
 const CONTEXT_HANDOFF_BEGIN = '<!-- context-handoff:begin -->';
 const CONTEXT_HANDOFF_END = '<!-- context-handoff:end -->';
-const REQUIRED_CONTEXT_HEADINGS = [
-  '### Instructions for reviewing agents',
-  '### Authoring context',
-];
-const REVIEW_INSTRUCTION_FIELDS = [
-  'Review focus',
-  'Decisions to challenge',
-  'Plausible failures / evidence gaps',
-];
-const MAX_REVIEW_INSTRUCTIONS_LENGTH = 1_200;
-const AUTHORING_CONTEXT_FIELDS = [
-  'User goal / directives',
-  'Constraints / non-goals',
-  'Risk-bearing decisions',
-  'Destructive or irreversible behavior',
-  'Deliberately not done or tested',
-  'Unknowns / confidence',
-];
+const REQUIRED_CONTEXT_HEADINGS = ['### Original user prompt', '### Shared conversation'];
 const PLACEHOLDER_ONLY = /^(?:<!--[\s\S]*?-->|\s|N\/?A|TODO|TBD|\(optional\))*$/i;
-const WITHHELD_CONTEXT = /^(?:N\/?A\b|redacted\b)/i;
 
 function parseArgs(argv) {
   const options = {
@@ -79,22 +61,68 @@ function parseArgs(argv) {
   return options;
 }
 
+/**
+ * Return line indexes that match `predicate` while ignoring fenced code payloads.
+ *
+ * Markdown headings inside the original-prompt fence are source text, not PR
+ * structure. Track CommonMark-style backtick/tilde fences so section discovery
+ * and duplicate-heading checks agree on the same structural lines.
+ */
+function lineIndexesOutsideFences(lines, predicate) {
+  const indexes = [];
+  let fence = null;
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+
+    if (fence) {
+      const closing = line.match(/^ {0,3}(`+|~+)[ \t]*$/);
+      if (closing && closing[1][0] === fence.marker && closing[1].length >= fence.length) {
+        fence = null;
+      }
+      continue;
+    }
+
+    const opening = line.match(/^ {0,3}(`{3,}|~{3,})(.*)$/);
+    if (opening) {
+      const marker = opening[1];
+      const info = opening[2] ?? '';
+      // CommonMark does not allow a backtick in a backtick fence's info string.
+      if (marker[0] !== '`' || !info.includes('`')) {
+        fence = { marker: marker[0], length: marker.length };
+        continue;
+      }
+    }
+
+    if (predicate(line, index)) {
+      indexes.push(index);
+    }
+  }
+
+  return indexes;
+}
+
 function headingCount(markdown, heading) {
-  return markdown.split('\n').filter((line) => line.trimEnd() === heading).length;
+  const lines = markdown.split('\n');
+  return lineIndexesOutsideFences(lines, (line) => line.trimEnd() === heading).length;
 }
 
 function sectionBody(markdown, heading) {
   const lines = markdown.split('\n');
-  const start = lines.findIndex((line) => line.trimEnd() === heading);
+  const starts = lineIndexesOutsideFences(lines, (line) => line.trimEnd() === heading);
+  const start = starts[0] ?? -1;
   if (start === -1) {
     return null;
   }
 
   const level = heading.startsWith('### ') ? 3 : 2;
   const nextHeading = level === 3 ? /^#{2,3}(?:\s|$)/ : /^##(?:\s|$)/;
-  const next = lines.findIndex((line, index) => index > start && nextHeading.test(line));
+  const next = lineIndexesOutsideFences(
+    lines,
+    (line, index) => index > start && nextHeading.test(line)
+  )[0];
   return lines
-    .slice(start + 1, next === -1 ? undefined : next)
+    .slice(start + 1, next === undefined ? undefined : next)
     .join('\n')
     .trim();
 }
@@ -108,23 +136,18 @@ function isFilledSection(section) {
   return Boolean(withoutComments) && !PLACEHOLDER_ONLY.test(withoutComments);
 }
 
-function markdownField(section, field) {
-  const prefix = `- **${field}:**`;
-  const line = section?.split('\n').find((candidate) => candidate.trimStart().startsWith(prefix));
-  if (!line) {
-    return null;
+function extractOriginalUserPrompt(section) {
+  if (!section) {
+    return '';
   }
 
-  return line
-    .trimStart()
-    .slice(prefix.length)
-    .replace(/<!--[\s\S]*?-->/g, '')
-    .trim();
-}
-
-function isCompleteContext(value) {
-  const normalized = value?.replaceAll('`', '').trim() ?? '';
-  return isFilledSection(normalized) && !WITHHELD_CONTEXT.test(normalized);
+  for (const match of section.matchAll(/(`{3,}|~{3,})(?:text)?[^\n]*\n([\s\S]*?)\n\1/g)) {
+    const prompt = match[2].replace(/<!--[\s\S]*?-->/g, '').trim();
+    if (prompt) {
+      return prompt;
+    }
+  }
+  return '';
 }
 
 function hasStructuralView(section) {
@@ -217,32 +240,79 @@ export function checkPullRequestBody(body, { changedLines = null } = {}) {
     findings.push('Context handoff must keep <!-- context-handoff:begin/end --> markers.');
   }
 
-  if (contextHeadingCounts.get('### Authoring context') === 1) {
-    const context = sectionBody(text, '### Authoring context');
-    for (const field of AUTHORING_CONTEXT_FIELDS) {
-      const value = markdownField(context, field);
-      if (!isCompleteContext(value)) {
-        findings.push(
-          `Authoring context must fill **${field}** with a meaningful public summary; N/A and redacted values are not accepted.`
-        );
-      }
+  if (contextHeadingCounts.get('### Original user prompt') === 1) {
+    const promptLines = sectionBody(text, '### Original user prompt').split('\n');
+    const refusalHeading = lineIndexesOutsideFences(
+      promptLines,
+      (line) => line.trimEnd() === '#### Sharing refusal (verbatim)'
+    )[0];
+    const originalPrompt = extractOriginalUserPrompt(
+      promptLines.slice(0, refusalHeading).join('\n')
+    );
+    if (!originalPrompt) {
+      findings.push(
+        'Original user prompt must contain the triggering prompt inside a fenced code block; the template placeholder does not count.'
+      );
     }
   }
 
-  if (contextHeadingCounts.get('### Instructions for reviewing agents') === 1) {
-    const instructions = sectionBody(text, '### Instructions for reviewing agents');
-    for (const field of REVIEW_INSTRUCTION_FIELDS) {
-      if (!isCompleteContext(markdownField(instructions, field))) {
+  if (contextHeadingCounts.get('### Shared conversation') === 1) {
+    const sharing = sectionBody(text, '### Shared conversation')
+      .replace(/<!--[\s\S]*?-->/g, '')
+      .trim();
+    const statuses = sharing.match(/^Status:.*$/gm) ?? [];
+    if (
+      statuses.length !== 1 ||
+      !/^Status: (shared|user-declined|unavailable|not-used)$/.test(statuses[0].trim())
+    ) {
+      findings.push(
+        'Shared conversation must declare exactly one Status: shared, user-declined, unavailable, or not-used.'
+      );
+    } else if (statuses[0].trim() === 'Status: shared') {
+      const link = sharing.match(/^Link: (\S+)\s*$/m)?.[1];
+      let validLink = false;
+      try {
+        const url = new URL(link);
+        validLink = ['https:', 'http:'].includes(url.protocol) && Boolean(url.hostname);
+      } catch {}
+      if (!validLink) {
         findings.push(
-          `Review instructions must fill **${field}** with concise, PR-specific content; N/A and redacted values are not accepted.`
+          'Shared conversation with Status: shared must include Link: <public HTTP(S) conversation URL>.'
         );
       }
-    }
-    const visibleInstructions = instructions.replace(/<!--[\s\S]*?-->/g, '').trim();
-    if (visibleInstructions.length > MAX_REVIEW_INSTRUCTIONS_LENGTH) {
-      findings.push(
-        `Review instructions must stay under ${MAX_REVIEW_INSTRUCTIONS_LENGTH} characters and include only the highest-value review guidance.`
-      );
+    } else {
+      const reason = sharing.match(/^Reason: (.+)$/m)?.[1]?.trim();
+      if (!isFilledSection(reason) || /^(?:n\/?a|redacted|todo|tbd|\.\.\.)$/i.test(reason)) {
+        findings.push(
+          'Shared conversation without a link must include a concrete Reason: explaining why.'
+        );
+      }
+      if (statuses[0].trim() === 'Status: user-declined') {
+        const prompt = sectionBody(text, '### Original user prompt') ?? '';
+        const lines = prompt.split('\n');
+        const headings = lineIndexesOutsideFences(
+          lines,
+          (line) => line.trimEnd() === '#### Sharing refusal (verbatim)'
+        );
+        const start = headings[0];
+        const end =
+          start === undefined
+            ? undefined
+            : lineIndexesOutsideFences(
+                lines,
+                (line, index) => index > start && /^#{1,4}(?:\s|$)/.test(line)
+              )[0];
+        const refusal =
+          headings.length === 1
+            ? extractOriginalUserPrompt(lines.slice(start + 1, end).join('\n'))
+            : '';
+
+        if (!isFilledSection(refusal) || /^(?:\[?redacted\]?|\.\.\.)$/i.test(refusal)) {
+          findings.push(
+            'User-declined sharing requires #### Sharing refusal (verbatim) and the user’s exact refusal in a fenced block under ### Original user prompt.'
+          );
+        }
+      }
     }
   }
 

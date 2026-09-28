@@ -14,14 +14,20 @@ this page is the full text of the rules summarised there.
   workspace-relative path and, when wired, opens a file-preview viewer tab
   through `handleOpenFile` with `pathKind: 'canonical'` (never the markdown
   href parser).
+- Base (All Changes) diffs open only the focused file by default; the other file
+  cards start collapsed and remain individually expandable. A base diff opened
+  without a focus starts with every card collapsed. Conversation/turn diffs keep
+  their existing all-files-open default.
+  On mobile, the diff-header action closes the diff sheet before opening the
+  file drawer so the diff modal cannot cover the destination viewer.
 - Editor window (Monaco): `session-monaco-text-viewer.tsx` inside
   `session-file-content-view.tsx`.
 - **What a client may DO with a session file is one model, `hooks/use-session-file-actions.ts`,
   and three surfaces render it**: the Files tree's right-click menu, the side
   panel's ⋯ button (left of `+`, and absent unless the active tab is a file),
   and the file-error card. The split it encodes is the invariant, not a detail:
-  `Copy file path` is offered ANYWHERE (every platform can write to the
-  clipboard, and on another machine the path IS the whole answer), while
+  copying a path is offered ANYWHERE (every platform can write to the
+  clipboard), while
   reaching a shell — `Open in default app` / `Open in browser`
   (`app.openLocalPath` → `shell.openPath`), `Reveal in file manager` /
   `Show in Finder` / `Show in File Explorer` (`app.revealLocalPath`, labelled per
@@ -39,12 +45,27 @@ this page is the full text of the rules summarised there.
   never a client-side retry loop. Never promote a
   local-host action to a surface that cannot perform it, and never re-derive
   that decision per surface — `lib/session-file-actions.ts` states it once.
+  Native mobile exports those same complete bytes through the Capacitor cache
+  and system share sheet instead of a browser download. The binary notice exposes
+  this as Share file alongside Copy file path only when its binary snapshot has
+  complete bytes (including zero bytes); error cards do not expose sharing.
+  The file menu uses the same action. Only native exports suppress duplicate
+  clicks while pending; browser downloads remain independent. Each export uses an isolated
+  cache filename. No remote host path is passed to the device OS.
   The path is resolved on the OWNING machine (its Flock `dotlodyPath` /
-  local-project root) and is built ONLY from that workspace root plus a
+  local-project root). The owning daemon publishes a real, normalized project
+  root even for older registrations through a symbolic link, so the renderer's
+  worktree ID matches the directory the daemon created. The file path is built
+  ONLY from that workspace root plus a
   genuinely workspace-relative viewer path — `lib/session-local-file-path.ts`
   rejects absolute and `..` paths, so a remote session can never hand this
-  machine's shell a path of its choosing; an unresolved root degrades the copy
-  to the workspace-relative path. `SessionFileErrorState` owns which error kinds
+  machine's shell a path of its choosing. The Files tree and the side-panel ⋯
+  menu expose that identity as two copy actions — `Copy relative path` always,
+  and `Copy absolute path` only once the workspace root resolves or the path is
+  already absolute; an unresolved root leaves the relative copy alone. The
+  file-error card and the Markdown-link menu keep one `Copy file path` /
+  `Copy Path` action, which copies the absolute path when it resolves and
+  otherwise the path as held. `SessionFileErrorState` owns which error kinds
   get the row (`offersFileActions`): only too-large and unsupported, never a
   missing, denied, or offline file where every button would fail. That card has
   NO status glyph and stacks its actions full-width in one column: a 40px icon

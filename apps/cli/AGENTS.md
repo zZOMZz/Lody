@@ -7,6 +7,10 @@ Root `AGENTS.md` applies; this file adds CLI context. Build, PR-poller, and adap
 
 ## Build and packaging
 
+- The Node 22 bundle uses native top-level await. Do not run a browser TLA
+  compatibility transform over its output chunks. Validate the CLI SSR build
+  under `NODE_OPTIONS=--max-old-space-size=2048`; increasing the heap is not a fix.
+
 - The public CLI defaults to the local platform, discovers no deployment dotenv files, and must
   never initialize telemetry in local mode even if PostHog variables exist in the shell.
 - INVARIANT: the dev output layout must match production's — `index.js` plus flat sibling
@@ -15,14 +19,27 @@ Root `AGENTS.md` applies; this file adds CLI context. Build, PR-poller, and adap
   `splitting: true`, and keep the no-hoisting assertion.
 - Import the CLI's own `version` from `@/pkg`, never a relative `../package.json`; the package
   `name` stays `lody` in every composition.
+- Optional desktop provenance comes from the compiled constant in `utils/desktop-build.ts`,
+  never runtime environment variables. File/hybrid log initialization records it at debug level.
 - Keep `prepare:acp-adapters` before `dev-build.mjs` and Vite: skipping it can silently launch old
   adapter capabilities from a stale `dist/`.
-- `engines.node` is pinned to `>=22.14.0` by better-sqlite3's `NAPI_VERSION=10`, and
+- `engines.node` is pinned to `>=22.14.0 <23 || >=23.6.0` by better-sqlite3's
+  `NAPI_VERSION=10`, and
   `src/utils/sqlite-runtime-support.ts` must stay the FIRST import in `src/index.ts` — older Node
   segfaults on the SQLite binding instead of throwing.
 - Read [apps/electron/AGENTS.md](../electron/AGENTS.md) — embedded packaging, native deps/ABI,
   child runtime env, and the three places the Node pin moves together — before changing runtime
   deps, bundle externals, or spawning `process.execPath` with a filtered environment.
+
+## State paths
+
+- INVARIANT: name the state root with `getLodyDataDir()`/`ensureLodyDataDir()`, never literal
+  `~/.lody` — only those honor `LODY_DATA_DIR` and the OSS `.lody-oss`, so a literal join names a
+  sibling that may not exist. Create it before a path inside reaches git or an ACP cwd; git reports
+  only `fatal: Invalid path '<data dir>'`. A path derived from a stored host path keeps THAT path's
+  separator — shape decides, never `process.platform` — since `dotlodyPath` crosses machines and
+  two spellings of one dir never match
+  ([note](../../.agents/notes/implemented/bug-fix/2026-09-14-lody-data-dir-path-root.md)).
 
 ## Coding rules
 
@@ -33,7 +50,12 @@ Root `AGENTS.md` applies; this file adds CLI context. Build, PR-poller, and adap
 - After a remote prompt arrives, only correctness-critical setup may block before ACP
   `agent.prompt`; never await notifications, analytics, or UI summaries
   (context/cli-prompt-hot-path.md).
-- Startup order and timing traces: context/cli-startup.md. Local logs: context/cli-logs.md.
+- Startup order and timing traces: context/cli-startup.md.
+- The daemon file log always keeps `debug`, so a per-token or per-tick `logger.debug` evicts the 20 MB
+  rotation window. Move it to `logger.trace` (`LODY_LOG_TRACE=1`) only if its subsystem's failures
+  stay diagnosable without it; keep failing/slow branches at `debug`
+  ([note](../../.agents/notes/implemented/architecture/2026-09-16-daemon-log-volume.md)).
+- File logs use `createFileTransport`; a raw `DailyRotateFile` makes a full disk crash the daemon.
 - Read context/local-agent-ownership.md before changing local ports/sockets, daemon PID state,
   Electron/daemon startup, Supervisor retries, or Worker shutdown; health probes are observation
   only and never authorize PID killing.
@@ -42,7 +64,7 @@ Root `AGENTS.md` applies; this file adds CLI context. Build, PR-poller, and adap
 
 ## Cross-entry agent contracts
 
-Before changing MCP tools, their callers, or delegated Task automation, read
+Before changing MCP tools or their callers, read
 [src/mcp/AGENTS.md](src/mcp/AGENTS.md) for Session acceptance, reply bounds, and
 execution/consent rules. These rules also bind CLI callers outside that directory.
 
@@ -56,11 +78,20 @@ execution/consent rules. These rules also bind CLI callers outside that director
   runtime rejections in debug diagnostics: Codex/Claude mismatches for model, effort, Fast, or Plan
   never become visible `agent_warning` notices, while other rejections still do. Claude Fable
   models omit Fast, so `fast=false` is skipped as a no-op while `fast=true` is dispatched.
+- INVARIANT: `SessionManager` publishes `exit`/`terminated` only for `Session` instances a caller
+  received. `MessageHandler` treats them as "the live turn's agent died" and finalizes the turn, so
+  a `createAgent` failure detaches the instance BEFORE its cleanup `terminate`; otherwise a
+  recovery such as the resume-to-replay fallback loses every update of the replacement agent
+  ([note](../../.agents/notes/implemented/bug-fix/2026-09-11-failed-session-create-lifecycle-events.md)).
 - `lody feedback` and MCP `lody_feedback` submit only caller-provided suggestion text plus CLI
   version, platform, and architecture — never cwd, paths, hostname, environment, logs, prompts,
   history, or file contents. Keep obvious-secret rejection in the CLI and the hosted API boundary.
 
 ## Agents, GitHub, and PR status
+
+- Checkout branch observations belong to `session/workspace-git-service.ts`, independent of
+  GitHub/PR support. Publish to the workspace owner, serialize probe plus write, and keep
+  startup/file snapshot observation off the prompt/RPC critical path.
 
 - ACP authentication rules: [src/agent/AGENTS.md](src/agent/AGENTS.md). A capability refresh after
   login proves credentials became usable and must finish inside the renderer's 300-second deadline.
@@ -73,6 +104,9 @@ execution/consent rules. These rules also bind CLI callers outside that director
   DeepSeek capability source version and thread the Agent config environment through every
   probe/session source-version derivation, so two endpoint catalogs never share a cache identity.
   Never put the API key or a derivative of it in that cache key.
+- Pi extension scanning runs only the pinned runtime's read-only listing entry under a frozen
+  default or saved-profile environment — never caller-supplied launch fields. Selections
+  require the pinned extension-aware runtime (`piExtensionsProtocolVersion`), not a fallback.
 - `src/lib/pr-poller/` compensates for a broken hosted GitHub webhook → Streams fan-out. Keep
   policy in its pure modules with a thin scheduler, keep priority driven by presence and
   `lastMessageAt` rather than a turn-end hook, and keep only scheduling state (never PR status) in

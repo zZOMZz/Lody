@@ -41,11 +41,14 @@ Repository map and entry points: [README.md](README.md#repository).
   downloads, read [platform contracts](packages/platform/AGENTS.md).
 - Before changing daemon protocol negotiation, MCP/Role catalogs or their UI
   consumers, per-turn MCP selection, or Role creation/dispatch, read [shared contracts](packages/shared/AGENTS.md).
-- `packages/acp-extension-kimi` stays outside the root pnpm graph in its isolated
+- `packages/acp-extension-kimi` and `packages/acp-extension-pi` stay outside the root pnpm graph in isolated
   submodule workspace; consume only its separately built, checksummed managed-runtime
   artifact and versioned ACP contract. Shared ACP extension contracts belong in the
   public `LodyAI/acp-extension-core` submodule, consumed through the root workspace;
   never duplicate them locally.
+- Pi provider migration requires owner confirmation and the target's `builtinPi`
+  protocol capability. Preserve provider IDs and settings; never convert legacy
+  native session IDs. Contract: [builtin Pi](specs/builtin-pi.md).
 - Viewer packaging/version changes must follow its [rules](packages/code-review-viewer/AGENTS.md).
   Package-scope or cloud/local composition changes require `pnpm check:public-boundary`.
 
@@ -55,19 +58,32 @@ Repository map and entry points: [README.md](README.md#repository).
   `Leeeon233`, or `wibus-wee`; otherwise community. Before planning a community
   contribution, read [.github/AGENTS.md](.github/AGENTS.md) for size/assignment rules.
   Read it before any PR/Issue work as well.
-- Node.js 22+; use the pnpm in `package.json`. `pnpm install` (nested checkouts
-  skip it); standalone work uses a separate clone. `pnpm start:local` starts the
-  desktop; root `pnpm build` uses the same local composition.
-- Before commit: `pnpm check` and `pnpm format`. If tests are skipped, report
+- Node.js 22.14-22.x or 23.6+ (Node-API 10+); use the pnpm in `package.json`. See the
+  [runtime-floor decision](.agents/notes/implemented/bug-fix/2026-09-09-node-api-runtime-floor.md).
+  `pnpm install` (nested checkouts skip it); standalone work uses a separate clone.
+  `pnpm start:local` starts the desktop; root `pnpm build` uses the same local composition.
+- Before commit: `pnpm check` and `pnpm format`. Root packages share `.oxfmtrc.json`;
+  ACP submodules stay independently formatted. If tests are skipped, report
   type/build/static checks. Manifest changes update `pnpm-lock.yaml`.
+- Packages invoking Oxfmt declare it in their own devDependencies: an embedded
+  parent workspace does not install this repository's root package.
 - Conventional Commits: `feat:`, `fix:`, `docs:`, `chore:`, `test:`. AI commits
   end with `Model: <runtime-model-id>`.
 - Tests use explicit signals, injected clocks, fake timers, and deterministic
   fixtures; no real sleeps, wall-clock races, network, machine load, or scheduler
   luck. Assert observable behavior, not mock call counts.
+- Delete shallow tests in the changed scope: source-string/regex assertions,
+  mock-call-only checks and duplicates that cannot detect a behavioral regression.
+  Test the real boundary and resulting state, including failure paths; retain
+  meaningful compile-failure contracts. Extend the owning suite instead of adding
+  a file per small fix. Do not delete behavioral coverage merely to reduce counts.
+- Keep PR documentation compact: update the owning Spec and Note instead of adding
+  incremental fix/run-log documents. Consolidate redundant PR-local notes, retaining
+  decisions, reproducible evidence and unresolved limits; repair inbound links.
 - Keep edits traceable to the request and preserve unrelated work. Prefer explicit
   contracts over hidden fallbacks; remove only unused code. Update the nearest
   public `AGENTS.md` when an invariant or boundary changes.
+
 
 ## Code Review Rules
 

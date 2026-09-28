@@ -4,6 +4,49 @@ Binding rules for this directory live in [AGENTS.md](AGENTS.md); this file keeps
 the reasoning behind them so the rules can stay short. It explains only the hooks
 that carry an invariant — the directory itself is the list of hooks.
 
+## Session submission
+
+`use-session-actions.ts` binds admission, analytics, and Jotai observations to
+`lib/session-submission.ts`. The latter owns the ordinary Promise entry points
+for creation, initial history, continuation, dispatch, and guide. It has no React
+lifetime or second writer. The workspace journal durably accepts the full input before releasing the
+composer, prepares attachments on Send, and serializes same-session submission.
+`use-session-preparation` holds an owned warmup lease; attachment takeover cancels
+and joins it. See the [attachment draft Spec](../../../../specs/session-files.md).
+
+| Area                   | Entry point                                                                                | Responsibility                                              |
+| ---------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------------- |
+| Session lifecycle      | [`use-session-actions.ts`](use-session-actions.ts)                                         | Bind operation targets and writes to one workspace runtime. |
+| Workspace catalogs     | [`use-agent-role-schema-reconciliation.ts`](use-agent-role-schema-reconciliation.ts)       | Reconcile owned Roles after matching runtime probes.        |
+| Conversation rendering | [`use-conversation-stream-items.ts`](use-conversation-stream-items.ts), [`use-session-doc.ts`](use-session-doc.ts) | Coordinate the hydration window and history publication. |
+
+## Session lifecycle
+
+`use-session-actions.ts` reads archive, restore, and archived-root deletion targets
+through `WorkspaceRuntime.readSessionOperationTargets`. The runtime owns source
+readiness and the Repo snapshot; the hook checks runtime identity before writing
+through its captured writer. UI projection lag cannot change the target set.
+Later-created Sessions fall outside that snapshot, and accepted writes are not
+rolled back after a later failure. Exact deletion and ordinary Tab close bypass
+discovery. The [relation Spec](../../../../specs/session-relations.md) owns cascade
+and failure semantics.
+
+## Default conversation draft
+
+`use-empty-session-draft.ts` materializes the empty conversation URL sentinel only
+after metadata hydration. It reuses an existing local draft or inserts one before
+selecting its URL; replayed effects must not create duplicate drafts. It never owns
+mobile viewer selection or creates a shared Session.
+
+## Horizontal wheel scrolling
+
+`use-horizontal-wheel-scroll.ts` is the one owner for converting a plain vertical
+mouse wheel into horizontal movement. It uses a non-passive native listener because
+React delegates wheel events passively, and releases native horizontal gestures,
+browser zoom, nested content selected by the caller, and movement at either edge.
+Compact tab strips use this behavior so their delta-mode normalization and edge
+handling cannot drift.
+
 ## Workspace membership refresh
 
 The cross-domain Better Auth `updateSession()` action returns `void`: it notifies
@@ -12,28 +55,46 @@ ownership transfer, before organization permissions refresh. The membership hook
 therefore calls it directly and separately notifies `$activeOrgSignal`. Its tests
 use the plugin's actual action so a Promise-returning mock cannot hide this error.
 
-## Conversation scrolling (`use-sticky-scroll.ts`)
+## Conversation scrolling
 
-`virtua` owns mounted rows, measurement, and index navigation. `use-stick-to-bottom`
-only observes content growth; it does not replace Virtua and does not own the
-product-level behaviors (per-session scroll restoration, search and group-expansion
-suppression, mobile keyboard and terminal-dock resizing) that the app adapters add
-around it. That is why the two concerns stay separated and why recovering the
-viewport element by DOM query, `VList` handle, item-count effect, observer retry, or
-timer is banned: only the viewport's own React callback ref fires on the real mount
-and unmount commits, which is what an empty-to-populated conversation depends on.
+The conversation viewport is owned by the conversation scroll engine
+(`lib/conversation-scroll`, rules in its `AGENTS.md`), which replaced
+`use-sticky-scroll.ts` and the Virtua list after seven fixes to the same blank-pane
+class. Why and how: the
+[scroll-engine note](../../../../.agents/notes/implemented/architecture/2026-09-27-conversation-scroll-engine.md).
+`scroll-debug-log.ts` still keeps a geometry-only timeline
+(`window.__lodyScrollLog.dump()`; console output with
+`localStorage['lody:debug-scroll'] = '1'`), and the engine keeps an always-on cycle
+log (`window.__lodyScrollEngineLog.dump()`).
 
-`ResizeObserver` records are the single source of viewport-size change because the
-mobile keyboard and the terminal dock resize that same element; custom resize-event
-pumps and guessed transition durations were the earlier, unreliable version. Only
-height matters: a flex sibling such as the desktop sidebar can animate its width
-every frame, and forwarding width-only records competes with the content observer's
-bottom correction and visibly jitters the conversation.
+`use-conversation-stream-items.ts` keys readiness and the visible hydration range by
+`factSource ?? view`. Accepted-history projection wrappers may change while the
+underlying conversation stays the same; resetting on wrapper identity would discard
+an off-tail reading window. A new underlying source, even with the same session id,
+must pass initial loading again. Before the first viewport report, the window is the
+retained tail plus the turn of the engine's restored reading anchor, so a restored
+position opens on real rows instead of placeholders.
 
-The composer one-shot ref preserves the reader's position while typing without
-changing keyboard, terminal, or window-resize follow behavior, which is why it is
-consumed for exactly one height resize and is not merged into programmatic-jump
-suppression.
+The rendered body set belongs to the reading window, the retained 40-turn tail,
+and native text selection. Other consumers may hydrate the same cache for facts,
+search or outline previews, but those bodies remain placeholders in the stream.
+Keeping the entry tail leased prevents the first narrower viewport report from
+making already displayed rows evictable. Selection publishes retained turn IDs
+before a scroll-driven window change; releasing selection removes that exception.
+A loaded user predecessor still supplies assistant configuration even when its
+own rendered row is a placeholder. See the
+[background hydration decision](../../../../.agents/notes/implemented/bug-fix/2026-09-22-background-hydration-render-window.md).
+
+## `useWorkspaceBadge`
+
+`workspaceBadgeAtom` derives an absolute count from complete active-session metadata
+and fresh presence, sharing the sidebar's parent/child activity summary. The elected
+workspace window publishes changes immediately, reasserts the snapshot every 30 seconds,
+and reconciles on focus or visibility restoration. The interval reads the current atom
+and never restarts because the count changed; failed IPC gets another opportunity even
+when the authoritative count stays zero. Main replaces contributions, and removes stale
+ones on renderer crash/reload or window close. See the
+[desktop window contract](../../../../specs/desktop-windows.md).
 
 ## `useStableSession`
 
@@ -46,6 +107,12 @@ sign-in request and successful page replacement. Timeouts, 5xx, and
 whose session is fine.
 
 ## Workspace catalog hooks
+
+`use-agent-role-schema-reconciliation.ts` runs from the ready workspace shell's
+window owner. It silently reconciles owned Roles after fresh, matching runtime
+probes, without requiring the Role editor. Repeated startup is idempotent; offline
+targets and failed probes remain retryable. See the
+[reconciliation Spec](../../../../specs/agent-role-schema-reconciliation.md).
 
 The workspace catalog is ONE small document, but a consumer mounts for every visible
 session plus every hidden child tab and side chat, so per-mount leases multiply room

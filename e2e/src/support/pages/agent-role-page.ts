@@ -1,5 +1,6 @@
 import { expect, type Locator, type Page } from '@playwright/test';
 import { AgentRoleFixture } from '../fixtures/agent-role-fixture.js';
+import { openSidebarArchive } from './sidebar-footer.js';
 
 type SessionMetaEvidence = {
   id?: string;
@@ -80,13 +81,14 @@ export class AgentRolePage {
     await expect(this.page.locator('#chat-prompt')).toBeEditable({ timeout: 30_000 });
 
     await this.page.getByRole('button', { name: /^(Run configuration|运行设置)$/u }).click();
-    await this.page.getByRole('menuitem', { name: /^(Role|角色)(?:\s|$)/u }).hover();
-    const roleOption = this.page.getByRole('menuitemradio', {
-      name: this.fixture.roleName,
-      exact: true,
-    });
+    const roleMenu = this.page.getByRole('menuitem', { name: /^(Role|角色)(?:\s|$)/u });
+    await roleMenu.focus();
+    await roleMenu.press('ArrowRight');
+    const roleOption = this.page
+      .getByRole('menuitemradio')
+      .filter({ has: this.page.getByText(this.fixture.roleName, { exact: true }) });
     await expect(roleOption).toBeEnabled();
-    await roleOption.click();
+    await roleOption.press('Enter');
     await expect(
       this.page.getByRole('button', { name: /^(Run configuration|运行设置)$/u })
     ).toContainText(this.fixture.roleName);
@@ -212,18 +214,17 @@ export class AgentRolePage {
     await this.page.getByRole('menuitem', { name: /^(Archive session|归档会话)$/u }).click();
     await expect(this.page).toHaveURL(/#\/local\/chat(?:\?.*)?$/u, { timeout: 30_000 });
     await this.fixture.expectAgentExited(resources.agentPid);
-    await this.page.evaluate((sessionId) => {
-      window.location.hash = `/local/sessions/${encodeURIComponent(sessionId)}`;
-    }, resources.sessionId);
-    const actions = this.page.getByRole('button', { name: /^(More actions|更多操作)$/u }).last();
-    await expect(actions).toBeVisible({ timeout: 30_000 });
-    await actions.click();
-    await this.page.getByRole('menuitem', { name: /^(Delete permanently|永久删除)$/u }).click();
+    await openSidebarArchive(this.page);
+    await expect(this.page).toHaveURL(/#\/local\/archive(?:\?.*)?$/u);
+    const archivedRow = this.page.locator(`[data-id="archive-session:${resources.sessionId}"]`);
+    await expect(archivedRow).toBeVisible({ timeout: 30_000 });
+    await archivedRow.hover();
+    await this.page.getByRole('button', { name: /^(Delete permanently|永久删除)$/u }).click();
     const dialog = this.page.getByRole('dialog', {
       name: /^(Delete permanently\?|确认永久删除？)$/u,
     });
-    await dialog.getByRole('button', { name: /^(Delete permanently|永久删除)$/u }).click();
-    await expect(this.page).toHaveURL(/#\/local\/chat(?:\?.*)?$/u, { timeout: 30_000 });
+    await dialog.getByRole('button', { name: /^(Delete|删除)$/u }).click();
+    await expect(archivedRow).toHaveCount(0);
 
     const reopenedSettings = await this.openAgentRoleSettings();
     await expect(reopenedSettings.getByText(this.fixture.roleName, { exact: true })).toBeHidden();

@@ -1,12 +1,15 @@
 // @vitest-environment jsdom
 
-import { act } from 'react';
+import { act, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { Provider, createStore } from 'jotai';
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MachineId, SessionId, SessionMeta } from '@lody/shared';
 import {
   MANAGED_BROWSER_STATE_MESSAGE_TYPE,
+  MANAGED_BROWSER_NAVIGATION_REQUEST_MESSAGE_TYPE,
+  MANAGED_BROWSER_READY_MESSAGE_TYPE,
+  SET_ANNOTATION_MODE_MESSAGE_TYPE,
   RESOLVE_VISUAL_ANNOTATION_ANCHORS_MESSAGE_TYPE,
   VISUAL_ANNOTATION_ANCHORS_RESOLVED_MESSAGE_TYPE,
   VISUAL_ANNOTATION_TARGET_MESSAGE_TYPE,
@@ -25,7 +28,7 @@ vi.mock('react-i18next', () => ({
   useTranslation: () => ({ t: (_key: string, fallback?: string) => fallback ?? _key }),
 }));
 
-vi.mock('sonner', () => ({ toast: { error: vi.fn() } }));
+vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn() } }));
 
 vi.mock('../src/components/preview/visual-annotation-comments-overlay', () => ({
   VisualAnnotationCommentsOverlay: () => null,
@@ -231,6 +234,87 @@ describe('ManagedPreviewSurface', () => {
     expect(iframe.isConnected).toBe(false);
   });
 
+  it('accepts runtime data only from the current exact Quick origin and frame, including after restore', async () => {
+    const store = createStore();
+    store.set(userAtom, { id: 'user-1', name: 'Test User', email: 'test@example.com' });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    const firstOrigin = 'https://first-preview.trycloudflare.com';
+    const restoredOrigin = 'https://restored-preview.trycloudflare.com';
+    const ignore = () => {};
+    function Harness({ origin }: { origin: string }) {
+      const [title, setTitle] = useState('untouched');
+      const [navigation, setNavigation] = useState('untouched');
+      return (
+        <Provider store={store}>
+          <output data-testid="state">{title}</output>
+          <output data-testid="navigation">{navigation}</output>
+          <ManagedPreviewSurface
+            session={session}
+            viewerUrl={`${origin}/docs?__lody_preview_token=synthetic`}
+            logicalUrl="http://localhost:5173/docs"
+            annotationEnabled
+            onAnnotationAvailabilityChange={ignore}
+            onRuntimeError={ignore}
+            onLoadingChange={ignore}
+            onBrowserStateChange={(state) => setTitle(state.title)}
+            onNavigationRequest={setNavigation}
+          />
+        </Provider>
+      );
+    }
+    await act(async () => root?.render(<Harness origin={firstOrigin} />));
+    const iframe = container.querySelector('iframe');
+    if (!iframe?.contentWindow) throw new Error('Expected managed preview iframe');
+    const messages = [
+      targetMessage,
+      {
+        type: MANAGED_BROWSER_STATE_MESSAGE_TYPE,
+        payload: {
+          url: '/docs',
+          title: 'accepted',
+          loading: false,
+          canGoBack: false,
+          canGoForward: false,
+        },
+      },
+      { type: MANAGED_BROWSER_NAVIGATION_REQUEST_MESSAGE_TYPE, payload: { url: '/next' } },
+    ];
+    const dispatch = async (origin: string, source: Window | null) => {
+      await act(async () => {
+        for (const data of messages) {
+          window.dispatchEvent(new MessageEvent('message', { origin, source, data }));
+        }
+      });
+    };
+    for (const origin of [restoredOrigin, 'http://first-preview.trycloudflare.com', 'null']) {
+      await dispatch(origin, iframe.contentWindow);
+    }
+    await dispatch(firstOrigin, window);
+    await dispatch(firstOrigin, null);
+    expect(container.querySelector('textarea')).toBeNull();
+    expect(container.querySelector('[data-testid="state"]')?.textContent).toBe('untouched');
+    expect(container.querySelector('[data-testid="navigation"]')?.textContent).toBe('untouched');
+
+    await dispatch(firstOrigin, iframe.contentWindow);
+    expect(container.querySelector('textarea')).not.toBeNull();
+    expect(container.querySelector('[data-testid="state"]')?.textContent).toBe('accepted');
+    expect(container.querySelector('[data-testid="navigation"]')?.textContent).toBe('/next');
+
+    await act(async () => root?.render(<Harness origin={restoredOrigin} />));
+    const restoredFrame = container.querySelector('iframe');
+    if (!restoredFrame?.contentWindow) throw new Error('Expected restored frame');
+    // Cached iframe/window identity may survive restore; origin must still change.
+    expect(container.querySelector('textarea')).toBeNull();
+    await dispatch(firstOrigin, restoredFrame.contentWindow);
+    await dispatch(restoredOrigin, window);
+    expect(container.querySelector('textarea')).toBeNull();
+    await dispatch(restoredOrigin, restoredFrame.contentWindow);
+    expect(container.querySelector('textarea')).not.toBeNull();
+    expect(container.querySelector('iframe')?.src).toContain(restoredOrigin);
+  });
+
   it('stages a newly created annotation reference in the matching chat input', async () => {
     const onAddVisualAnnotationToChat = vi.fn(() => true);
     const store = createStore();
@@ -414,6 +498,116 @@ describe('ManagedPreviewSurface', () => {
       '[data-lody-visual-comment-draft="true"]'
     ) as HTMLDivElement | null;
     expect(draft?.style.top).toBe('102px');
+  });
+
+  it('keeps the page and reload usable without a runtime and accepts a late handshake', async () => {
+    vi.useFakeTimers();
+    const store = createStore();
+    const viewerUrl = 'http://127.0.0.1:61234/';
+    function Browser() {
+      const [available, setAvailable] = useState(false);
+      const [loading, setLoading] = useState(false);
+      const [error, setError] = useState<string | null>(null);
+      const [command, setCommand] = useState<{ id: number; action: 'reload' }>();
+      return (
+        <>
+          <output>
+            {loading ? 'loading' : 'loaded'};{available ? 'annotatable' : 'unavailable'};
+            {error ?? 'no error'}
+          </output>
+          <button
+            onClick={() =>
+              setCommand((current) => ({ id: (current?.id ?? 0) + 1, action: 'reload' }))
+            }
+          >
+            Reload
+          </button>
+          <ManagedPreviewSurface
+            session={session}
+            viewerUrl={viewerUrl}
+            logicalUrl="http://localhost:5173/"
+            annotationEnabled={false}
+            command={command}
+            onAnnotationAvailabilityChange={setAvailable}
+            onLoadingChange={setLoading}
+            onRuntimeError={setError}
+            onBrowserStateChange={() => {}}
+            onNavigationRequest={() => {}}
+          />
+        </>
+      );
+    }
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    try {
+      await act(async () =>
+        root?.render(
+          <Provider store={store}>
+            <Browser />
+          </Provider>
+        )
+      );
+      const iframe = container.querySelector('iframe');
+      if (!iframe?.contentWindow) throw new Error('Expected preview iframe');
+      const postMessage = vi
+        .spyOn(iframe.contentWindow, 'postMessage')
+        .mockImplementation(() => {});
+      await act(async () =>
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            source: iframe.contentWindow,
+            origin: 'http://127.0.0.1:61234',
+            data: { type: MANAGED_BROWSER_READY_MESSAGE_TYPE },
+          })
+        )
+      );
+      expect(postMessage).toHaveBeenCalledWith(
+        { type: SET_ANNOTATION_MODE_MESSAGE_TYPE, enabled: false },
+        'http://127.0.0.1:61234'
+      );
+      expect(container.querySelector('output')?.textContent).toBe('loading;unavailable;no error');
+      await act(async () => iframe.dispatchEvent(new Event('load')));
+      await act(async () => vi.advanceTimersByTime(30_000));
+      expect(container.querySelector('output')?.textContent).toBe('loaded;unavailable;no error');
+      expect(container.querySelector('iframe')).toBe(iframe);
+      // A parent-driven reload still works when there is no injected receiver.
+      iframe.src = 'http://127.0.0.1:61234/error';
+      await act(async () => container?.querySelector('button')?.click());
+      expect(iframe.src).toBe(viewerUrl);
+      await act(async () => iframe.dispatchEvent(new Event('load')));
+      await act(async () =>
+        window.dispatchEvent(
+          new MessageEvent('message', {
+            source: iframe.contentWindow,
+            origin: 'http://127.0.0.1:61234',
+            data: {
+              type: MANAGED_BROWSER_STATE_MESSAGE_TYPE,
+              payload: {
+                url: viewerUrl,
+                title: 'Preview',
+                loading: true,
+                canGoBack: false,
+                canGoForward: false,
+              },
+            },
+          })
+        )
+      );
+      expect(container.querySelector('output')?.textContent).toBe('loading;annotatable;no error');
+      expect(container.querySelector('iframe')).toBe(iframe);
+      // A page-initiated navigation has no parent src change. Its runtime can
+      // report loading, but native load must finish it without a runtime reply.
+      await act(async () => iframe.dispatchEvent(new Event('load')));
+      expect(container.querySelector('output')?.textContent).toBe('loaded;unavailable;no error');
+      // A previously healthy runtime can disappear too. Reload must still be
+      // performed by the parent rather than sent to the missing receiver.
+      iframe.src = 'http://127.0.0.1:61234/error';
+      await act(async () => container?.querySelector('button')?.click());
+      expect(iframe.src).toBe(viewerUrl);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   const mountRemountCycle = async (onLoadingChange: ReturnType<typeof vi.fn>) => {
