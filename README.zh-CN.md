@@ -166,4 +166,6 @@ Lody 仍在走向完整的 local-first 支持。
 - `packages/shared` — 共享 Schema、协议与工具
 - `site-docs` — 官网、文档与博客
 
+想系统理解源码，可从[七天学习课程](./.agents/docs/learning/README.md)开始，按消息、执行、同步与恢复的主线完成示例和章末练习，再用独立答案自查。
+
 如果希望参与开发，请阅读 [CONTRIBUTING.md](./CONTRIBUTING.md)（含社区 PR 规模限制）。

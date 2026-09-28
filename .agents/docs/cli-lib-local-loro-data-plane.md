@@ -28,13 +28,14 @@ Protocol v7, push-only, peer-scoped. A dedicated `lody-loro-data-plane` socket i
 0700 run dir routes persistent connections to per-workspace
 `LocalLoroDataPlaneServer` engines (`@lody/shared`, owned by `LoroDocumentManager`).
 Every message carries `workspaceId` + `peerId` (a per-adapter uuid), and the server
-keys sync state per PEER (`lastSentVV`, flock bundle hash), so multiple windows
+keys sync state per PEER (`lastSentVV` for Doc, `lastSentVersion` for Flock), so multiple windows
 multiplexed over the one relay socket sync independently and a sender's own ops are
 never echoed back to it.
 
-Doc rooms sync via version-vector deltas in both directions; flock rooms sync via full
-bundles on change. Broadcast passes are coalesced by a queued-pass latch that bounds a
-change burst to one running plus one queued full `exportJson` — never an unbounded
+Doc and Flock rooms sync via version-vector deltas in both directions. Flock uses
+`exportJson(from)` to export entries newer than the peer's version; a first sync starts
+from an empty vector. Broadcast passes are coalesced by a queued-pass latch that bounds a
+change burst to one running plus one queued broadcast pass — never an unbounded
 chain — while still giving a change that lands mid-broadcast its own follow-up pass.
 
 All workspace engines share the process-level `local-loro-data-plane-scheduler`
